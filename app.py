@@ -6,7 +6,6 @@ import os
 import tempfile
 
 def extract_text(file_path):
-    """Extract text from PDF or Word file"""
     if file_path.endswith(".pdf"):
         doc = fitz.open(file_path)
         text = ""
@@ -21,7 +20,6 @@ def extract_text(file_path):
         return ""
 
 def search_documents(files, keyword):
-    """Search multiple files (including zip folders) for a keyword"""
     results = ""
     temp_dir = tempfile.mkdtemp()
 
@@ -54,12 +52,9 @@ def search_documents(files, keyword):
 demo = gr.Interface(
     fn=search_documents,
     inputs=[
-        gr.File(file_types=[".pdf", ".docx", ".zip"], file_types_allow_multiple=True, label="Upload PDFs, Word files, or zip folders"),
+        gr.File(file_types=[".pdf", ".docx", ".zip"], label="Upload PDFs, Word files, or zip folders", file_types_multiple=True),
         gr.Textbox(label="Keyword to search")
     ],
     outputs=gr.Textbox(label="Search Results", lines=20),
     title="Document Keyword Search",
-    description="Upload multiple PDFs, Word documents, or zip folders containing documents and search for keywords across all files."
-)
-
-demo.launch()
+    description="Upload multiple PDFs, Word documents, or zip folders conta
