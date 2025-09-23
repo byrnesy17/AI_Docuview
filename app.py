@@ -4,8 +4,12 @@ from docx import Document
 import zipfile, os, tempfile, re
 import numpy as np
 from sentence_transformers import SentenceTransformer
-from nltk.corpus import wordnet
+import nltk
 import csv
+
+# Download WordNet
+nltk.download('wordnet')
+from nltk.corpus import wordnet
 
 # -----------------------------
 # Initialize semantic model
@@ -190,4 +194,3 @@ with gr.Blocks(title="Ultra Fast Document Explorer") as demo:
     export_btn.click(export_results_csv, inputs=[search_results_store], outputs=[export_btn])
 
 demo.launch()
-
