@@ -1,5 +1,6 @@
 gradio
 PyMuPDF
 python-docx
-openai
+sentence-transformers
 numpy
+torch
