@@ -5,9 +5,7 @@ import zipfile, os, tempfile, re, hashlib, asyncio
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from nltk.corpus import wordnet
-import matplotlib.pyplot as plt
-import seaborn as sns
-from io import BytesIO
+import csv
 
 # -----------------------------
 # Initialize semantic model
@@ -17,7 +15,6 @@ model = SentenceTransformer('all-MiniLM-L6-v2')
 # -----------------------------
 # Caching
 # -----------------------------
-highlight_cache = {}
 precomputed_embeddings = {}
 
 # -----------------------------
@@ -33,7 +30,6 @@ def expand_keywords(keywords):
     return list(expanded)
 
 def extract_text_chunks(file_path, chunk_size=500):
-    """Splits text into smaller chunks for faster embeddings."""
     text_data = []
     if file_path.lower().endswith(".pdf"):
         doc = fitz.open(file_path)
@@ -58,26 +54,17 @@ def extract_text_chunks(file_path, chunk_size=500):
                 text_data.append((file_path, f"Paragraph {idx}", None, text))
     return text_data
 
-def assign_colors(keywords):
-    import random
-    random.seed(42)
-    colors = ["#FFB6C1","#87CEFA","#90EE90","#FFA500","#DA70D6","#FFFF00","#00CED1","#FF6347"]
-    return {kw: colors[i % len(colors)] for i, kw in enumerate(keywords)}
-
 def highlight_terms_html(text, keywords):
-    color_map = assign_colors(keywords)
     def repl(m):
-        kw = m.group(0)
-        return f"<mark style='background-color:{color_map.get(kw.lower(), 'yellow')}'>{kw}</mark>"
+        return f"<mark>{m.group(0)}</mark>"
     pattern = re.compile("|".join(re.escape(k.strip()) for k in keywords), re.IGNORECASE)
     return pattern.sub(repl, text)
 
 # -----------------------------
-# Async Preprocessing with Embeddings
+# Async Preprocessing
 # -----------------------------
 async def preprocess_file_async(file_path, temp_dir, chunk_size=500):
     all_text_data = []
-    # Handle ZIP extraction
     files_to_process = []
     if file_path.lower().endswith(".zip"):
         extract_path = tempfile.mkdtemp(dir=temp_dir)
@@ -93,7 +80,6 @@ async def preprocess_file_async(file_path, temp_dir, chunk_size=500):
     for f in files_to_process:
         chunks = extract_text_chunks(f, chunk_size)
         all_text_data.extend(chunks)
-        # Precompute embeddings
         texts = [c[3] for c in chunks]
         if texts:
             precomputed_embeddings[f] = model.encode(texts, convert_to_numpy=True)
@@ -101,9 +87,10 @@ async def preprocess_file_async(file_path, temp_dir, chunk_size=500):
 
 async def preprocess_files_async(files, progress=gr.Progress()):
     temp_dir = tempfile.mkdtemp()
+    if not isinstance(files, list):
+        files = [files]
     total = len(files)
     all_text_data = []
-
     for idx, file in enumerate(files):
         progress((idx+1)/total, f"Processing {os.path.basename(file)} ({idx+1}/{total})")
         chunks = await preprocess_file_async(file, temp_dir)
@@ -111,7 +98,7 @@ async def preprocess_files_async(files, progress=gr.Progress()):
     return all_text_data
 
 # -----------------------------
-# Semantic Search using Vectorized NumPy
+# Semantic Search
 # -----------------------------
 def semantic_search_vector(query, all_text_data, threshold=0.5):
     if not query.strip() or not all_text_data:
@@ -122,7 +109,7 @@ def semantic_search_vector(query, all_text_data, threshold=0.5):
     keyword_embeddings = model.encode(keywords, convert_to_numpy=True)
 
     results = []
-    for idx, (file_path, location, page_index, text) in enumerate(all_text_data):
+    for file_path, location, page_index, text in all_text_data:
         text_embs = precomputed_embeddings.get(file_path)
         if text_embs is None:
             continue
@@ -136,29 +123,40 @@ def semantic_search_vector(query, all_text_data, threshold=0.5):
                     "location": location,
                     "page_index": page_index if page_index is not None else 0,
                     "sentence": highlighted,
-                    "score": max_score,
-                    "keywords": keywords,
-                    "type": os.path.splitext(file_path)[1].lower()
+                    "score": max_score
                 })
     results.sort(key=lambda x: x["score"], reverse=True)
     return results
 
 # -----------------------------
-# Gradio UI (simplified for clarity)
+# Export CSV
+# -----------------------------
+def export_results_csv(results):
+    if not results: return None
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
+    with open(temp_file.name, "w", newline="", encoding="utf-8") as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(["File","Location","Sentence","Score"])
+        for r in results:
+            writer.writerow([r['file'], r['location'], re.sub("<[^>]+>", "", r['sentence']), f"{r['score']:.2f}"])
+    return temp_file.name
+
+# -----------------------------
+# Gradio UI
 # -----------------------------
 with gr.Blocks(title="Ultra Fast Document Explorer") as demo:
-    gr.Markdown("### Upload multiple documents (PDF, Word, ZIP). Semantic search with highlighted results and fast performance.")
-    
+    gr.Markdown("### Upload multiple documents (PDF, Word, ZIP). Semantic search with highlighted results.")
+
     with gr.Row():
         with gr.Column(scale=1):
-            file_input = gr.File(label="Upload Documents", file_types=[".pdf",".docx",".zip"], file_types="multiple")
+            file_input = gr.File(label="Upload Documents", file_types=[".pdf",".docx",".zip"], file_types=None)  # corrected
             keyword_input = gr.Textbox(label="Keywords (comma separated)")
             threshold_input = gr.Slider(label="Min Similarity", minimum=0, maximum=1, step=0.01, value=0.5)
             export_btn = gr.File(label="Export CSV")
         with gr.Column(scale=2):
             sentence_display = gr.HTML(label="Highlighted Sentence")
             results_table = gr.Dataframe(headers=["File","Location","Score"], datatype=["str","str","number"], interactive=True)
-    
+
     all_text_data_store = gr.State()
     search_results_store = gr.State()
     selected_index = gr.State(0)
@@ -194,17 +192,6 @@ with gr.Blocks(title="Ultra Fast Document Explorer") as demo:
     # -----------------------------
     # Export CSV
     # -----------------------------
-    def export_results_csv(results):
-        if not results: return None
-        import csv, tempfile, re
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
-        with open(temp_file.name, "w", newline="", encoding="utf-8") as csvfile:
-            writer = csv.writer(csvfile)
-            writer.writerow(["File","Location","Sentence","Score"])
-            for r in results:
-                writer.writerow([r['file'], r['location'], re.sub("<[^>]+>", "", r['sentence']), f"{r['score']:.2f}"])
-        return temp_file.name
-
     export_btn.click(export_results_csv, inputs=[search_results_store], outputs=[export_btn])
 
 demo.launch()
