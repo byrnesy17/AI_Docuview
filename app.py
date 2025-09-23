@@ -5,24 +5,29 @@ import zipfile
 import os
 import tempfile
 
-def extract_text(file_path):
+def extract_text_with_pages(file_path):
+    """
+    Extract text from PDF or Word file.
+    For PDFs, returns a list of tuples: (page_number, line)
+    For Word, returns list of lines with page number = None
+    """
+    text_data = []
     if file_path.endswith(".pdf"):
         doc = fitz.open(file_path)
-        text = ""
-        for page in doc:
-            text += page.get_text()
-        return text
+        for i, page in enumerate(doc):
+            for line in page.get_text("text").split("\n"):
+                if line.strip():
+                    text_data.append((i+1, line))
     elif file_path.endswith(".docx"):
         doc = Document(file_path)
-        text = "\n".join([p.text for p in doc.paragraphs])
-        return text
-    else:
-        return ""
+        for p in doc.paragraphs:
+            if p.text.strip():
+                text_data.append((None, p.text))
+    return text_data
 
 def search_documents(files, keyword):
     results = ""
     temp_dir = tempfile.mkdtemp()
-
     all_files = []
 
     # Extract files if zip, otherwise add directly
@@ -39,8 +44,14 @@ def search_documents(files, keyword):
 
     # Search for keyword in all files
     for file_path in all_files:
-        text = extract_text(file_path)
-        matches = [line for line in text.split("\n") if keyword.lower() in line.lower()]
+        text_data = extract_text_with_pages(file_path)
+        matches = []
+        for page_num, line in text_data:
+            if keyword.lower() in line.lower():
+                if page_num:
+                    matches.append(f"(Page {page_num}) {line}")
+                else:
+                    matches.append(line)
         if matches:
             results += f"--- {os.path.basename(file_path)} ---\n"
             results += "\n".join(matches) + "\n\n"
@@ -57,4 +68,7 @@ demo = gr.Interface(
     ],
     outputs=gr.Textbox(label="Search Results", lines=20),
     title="Document Keyword Search",
-    description="Upload multiple PDFs, Word documents, or zip folders conta
+    description="Upload multiple PDFs, Word documents, or zip folders and search for keywords across all files. PDF matches show page numbers."
+)
+
+demo.launch()
