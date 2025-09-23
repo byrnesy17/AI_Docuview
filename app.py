@@ -6,11 +6,11 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 from concurrent.futures import ThreadPoolExecutor
 
-# Initialize sentence-transformers model
+# Initialize local embedding model
 model = SentenceTransformer('all-MiniLM-L6-v2')
 
 def extract_text(file_path):
-    """Extract text from PDF or DOCX and return list of (location, line)"""
+    """Extract text from PDF or DOCX with location info."""
     text_data = []
     try:
         if file_path.lower().endswith(".pdf"):
@@ -29,7 +29,7 @@ def extract_text(file_path):
     return text_data
 
 def process_file(file_path, temp_dir):
-    """Process single file or zip"""
+    """Process single file or zip."""
     texts = []
     if file_path.lower().endswith(".zip"):
         extract_path = tempfile.mkdtemp(dir=temp_dir)
@@ -48,9 +48,8 @@ def process_file(file_path, temp_dir):
                       for loc, line in extract_text(file_path)])
     return texts
 
-def compute_embeddings(lines):
-    """Compute embeddings in batches"""
-    batch_size = 50
+def compute_embeddings(lines, batch_size=50):
+    """Compute embeddings in batches for speed."""
     embeddings = []
     for i in range(0, len(lines), batch_size):
         batch = lines[i:i+batch_size]
@@ -65,7 +64,7 @@ def semantic_search(files, query):
     temp_dir = tempfile.mkdtemp()
     all_text_data = []
 
-    # Parallel processing of files
+    # Parallel file processing
     with ThreadPoolExecutor() as executor:
         for result in executor.map(lambda f: process_file(f, temp_dir), files):
             all_text_data.extend(result)
@@ -74,22 +73,22 @@ def semantic_search(files, query):
         shutil.rmtree(temp_dir, ignore_errors=True)
         return "No readable content found in uploaded files."
 
-    # Extract lines for embeddings
+    # Compute embeddings
     lines = [line for _, _, line in all_text_data]
     embeddings = compute_embeddings(lines)
 
-    # Embed the query
+    # Embed query
     query_emb = model.encode([query], convert_to_numpy=True)[0]
 
     # Compute similarity
     results = []
     for (file_name, loc, line), emb in zip(all_text_data, embeddings):
         score = float(np.dot(query_emb, emb) / (np.linalg.norm(query_emb) * np.linalg.norm(emb)))
-        if score > 0.5:  # relevance threshold
-            # Highlight query word
+        if score > 0.5:  # threshold
             highlighted = line.replace(query, f"**{query}**")
             results.append((score, file_name, loc, highlighted))
 
+    # Sort by similarity descending
     results.sort(reverse=True, key=lambda x: x[0])
 
     output = ""
@@ -104,8 +103,8 @@ def semantic_search(files, query):
 
 # --- Gradio UI ---
 with gr.Blocks() as demo:
-    gr.Markdown("<h1 style='text-align:center'>📄 AI-Powered Meeting Minutes Search</h1>", elem_id="title")
-    gr.Markdown("Upload multiple PDFs, Word docs, or ZIP files containing meeting minutes. Enter a search query to find relevant topics and similar terms across all documents.", elem_id="desc")
+    gr.Markdown("<h1 style='text-align:center'>📄 AI-Powered Meeting Minutes Search</h1>")
+    gr.Markdown("Upload multiple PDFs, Word docs, or ZIP files. Enter a search query to find relevant topics and related terms across all documents.")
 
     with gr.Row():
         with gr.Column(scale=1):
