@@ -31,15 +31,15 @@ def search_documents(files, keyword):
 
     for file in files:
         # If zip, extract contents
-        if file.name.lower().endswith(".zip"):
-            with zipfile.ZipFile(file.name, 'r') as zip_ref:
+        if file.lower().endswith(".zip"):
+            with zipfile.ZipFile(file, 'r') as zip_ref:
                 zip_ref.extractall(temp_dir)
                 for root, _, filenames in os.walk(temp_dir):
                     for f in filenames:
                         if f.lower().endswith((".pdf", ".docx")):
                             all_files.append(os.path.join(root, f))
         else:
-            all_files.append(file.name)
+            all_files.append(file)
 
     # Search for keyword
     for file_path in all_files:
@@ -62,7 +62,7 @@ def search_documents(files, keyword):
 demo = gr.Interface(
     fn=search_documents,
     inputs=[
-        gr.File(label="Upload PDFs, Word files, or zip folders", type="file", file_types=[".pdf", ".docx", ".zip"]),
+        gr.File(label="Upload PDFs, Word files, or zip folders", type="filepath", file_types=[".pdf", ".docx", ".zip"], file_types_multiple=True),
         gr.Textbox(label="Keyword to search")
     ],
     outputs=gr.Textbox(label="Search Results", lines=20),
