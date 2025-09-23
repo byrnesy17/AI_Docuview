@@ -6,7 +6,6 @@ import os
 import tempfile
 
 def extract_text_with_pages(file_path):
-    """Extract text from PDF or Word file."""
     text_data = []
     if file_path.lower().endswith(".pdf"):
         doc = fitz.open(file_path)
@@ -26,12 +25,12 @@ def search_documents(files, keyword):
     temp_dir = tempfile.mkdtemp()
     all_files = []
 
-    # Convert uploaded files to a list if single file is uploaded
+    # Ensure files is always a list
     if not isinstance(files, list):
         files = [files]
 
-    # Extract files if zip, otherwise add directly
     for file in files:
+        # If zip, extract contents
         if file.name.lower().endswith(".zip"):
             with zipfile.ZipFile(file.name, 'r') as zip_ref:
                 zip_ref.extractall(temp_dir)
@@ -42,7 +41,7 @@ def search_documents(files, keyword):
         else:
             all_files.append(file.name)
 
-    # Search for keyword in all files
+    # Search for keyword
     for file_path in all_files:
         text_data = extract_text_with_pages(file_path)
         matches = []
@@ -63,12 +62,12 @@ def search_documents(files, keyword):
 demo = gr.Interface(
     fn=search_documents,
     inputs=[
-        gr.File(label="Upload PDFs, Word files, or zip folders", type="file", file_types=[".pdf", ".docx", ".zip"], file_types_multiple=None),
+        gr.File(label="Upload PDFs, Word files, or zip folders", type="file", file_types=[".pdf", ".docx", ".zip"]),
         gr.Textbox(label="Keyword to search")
     ],
     outputs=gr.Textbox(label="Search Results", lines=20),
     title="Document Keyword Search",
-    description="Upload multiple PDFs, Word documents, or zip folders and search for keywords. PDF matches show page numbers."
+    description="Upload PDFs, Word documents, or zip folders and search for keywords across all files. PDF matches show page numbers."
 )
 
 demo.launch()
