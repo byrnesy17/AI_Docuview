@@ -1,196 +1,166 @@
 import gradio as gr
-import fitz
-from docx import Document
-import zipfile, os, tempfile, re
-import numpy as np
-from sentence_transformers import SentenceTransformer
+import os
+import zipfile
+import tempfile
+import shutil
 import nltk
-import csv
-
-# Download WordNet
-nltk.download('wordnet')
 from nltk.corpus import wordnet
+from PyPDF2 import PdfReader
+import docx
+from sentence_transformers import SentenceTransformer, util
 
-# -----------------------------
-# Initialize semantic model
-# -----------------------------
-model = SentenceTransformer('all-MiniLM-L6-v2')
+# Make sure WordNet is downloaded
+nltk.download("wordnet", quiet=True)
 
-# -----------------------------
-# Caching
-# -----------------------------
-precomputed_embeddings = {}
+# Load semantic search model
+model = SentenceTransformer("all-MiniLM-L6-v2")
 
-# -----------------------------
-# Helper Functions
-# -----------------------------
-def expand_keywords(keywords):
-    expanded = set()
-    for kw in keywords:
-        expanded.add(kw)
-        for syn in wordnet.synsets(kw):
-            for lemma in syn.lemmas():
-                expanded.add(lemma.name().replace("_"," "))
-    return list(expanded)
+# ========== File Processing Helpers ==========
+def extract_text_from_pdf(file_path):
+    text = ""
+    try:
+        reader = PdfReader(file_path)
+        for page in reader.pages:
+            text += page.extract_text() or ""
+    except Exception as e:
+        text += f"\n[Error reading PDF: {e}]"
+    return text
 
-def extract_text_chunks(file_path, chunk_size=500):
-    text_data = []
-    if file_path.lower().endswith(".pdf"):
-        doc = fitz.open(file_path)
-        for i, page in enumerate(doc):
-            page_text = page.get_text("text").strip()
-            if page_text:
-                lines = page_text.split("\n")
-                chunk = ""
-                for line in lines:
-                    if len(chunk) + len(line) < chunk_size:
-                        chunk += line + " "
-                    else:
-                        text_data.append((file_path, f"Page {i+1}", i, chunk.strip()))
-                        chunk = line + " "
-                if chunk.strip():
-                    text_data.append((file_path, f"Page {i+1}", i, chunk.strip()))
-    elif file_path.lower().endswith(".docx"):
-        doc = Document(file_path)
-        for idx, p in enumerate(doc.paragraphs, start=1):
-            text = p.text.strip()
-            if text:
-                text_data.append((file_path, f"Paragraph {idx}", None, text))
-    return text_data
+def extract_text_from_docx(file_path):
+    text = ""
+    try:
+        doc = docx.Document(file_path)
+        for para in doc.paragraphs:
+            text += para.text + "\n"
+    except Exception as e:
+        text += f"\n[Error reading DOCX: {e}]"
+    return text
 
-def highlight_terms_html(text, keywords):
-    def repl(m):
-        return f"<mark>{m.group(0)}</mark>"
-    pattern = re.compile("|".join(re.escape(k.strip()) for k in keywords), re.IGNORECASE)
-    return pattern.sub(repl, text)
-
-# -----------------------------
-# Preprocessing
-# -----------------------------
 def preprocess_files(files):
+    all_texts = {}
     temp_dir = tempfile.mkdtemp()
-    if not isinstance(files, list):
-        files = [files]
 
-    all_text_data = []
-    files_to_process = []
+    try:
+        for file in files:
+            filename = os.path.basename(file.name)
+            file_path = os.path.join(temp_dir, filename)
+            shutil.copy(file.name, file_path)
 
-    for file in files:
-        if file.lower().endswith(".zip"):
-            extract_path = tempfile.mkdtemp(dir=temp_dir)
-            with zipfile.ZipFile(file, "r") as zip_ref:
-                zip_ref.extractall(extract_path)
-            for root, _, filenames in os.walk(extract_path):
-                for f in filenames:
-                    if f.lower().endswith((".pdf",".docx")):
-                        files_to_process.append(os.path.join(root, f))
-        else:
-            files_to_process.append(file)
+            # Handle zip archives
+            if zipfile.is_zipfile(file_path):
+                with zipfile.ZipFile(file_path, "r") as zip_ref:
+                    zip_ref.extractall(temp_dir)
+                for root, _, inner_files in os.walk(temp_dir):
+                    for inner_file in inner_files:
+                        if inner_file.endswith(".pdf"):
+                            all_texts[inner_file] = extract_text_from_pdf(os.path.join(root, inner_file))
+                        elif inner_file.endswith(".docx"):
+                            all_texts[inner_file] = extract_text_from_docx(os.path.join(root, inner_file))
+            else:
+                if filename.endswith(".pdf"):
+                    all_texts[filename] = extract_text_from_pdf(file_path)
+                elif filename.endswith(".docx"):
+                    all_texts[filename] = extract_text_from_docx(file_path)
+    finally:
+        shutil.rmtree(temp_dir)
 
-    for f in files_to_process:
-        chunks = extract_text_chunks(f)
-        all_text_data.extend(chunks)
-        texts = [c[3] for c in chunks]
-        if texts:
-            precomputed_embeddings[f] = model.encode(texts, convert_to_numpy=True)
+    return all_texts
 
-    return all_text_data
+# Expand search query with synonyms
+def expand_query(query):
+    synonyms = set()
+    for syn in wordnet.synsets(query):
+        for lemma in syn.lemmas():
+            synonyms.add(lemma.name().replace("_", " "))
+    return list(synonyms)[:5]  # Limit synonyms for efficiency
 
-# -----------------------------
-# Semantic Search
-# -----------------------------
-def semantic_search(query, all_text_data, threshold=0.5):
-    if not query.strip() or not all_text_data:
-        return []
+# Main search function
+def semantic_search(files, query):
+    if not files:
+        return "Please upload at least one file.", None, None
 
-    base_keywords = [k.strip() for k in query.split(",") if k.strip()]
-    keywords = expand_keywords(base_keywords)
-    keyword_embeddings = model.encode(keywords, convert_to_numpy=True)
-
+    all_texts = preprocess_files(files)
     results = []
-    for file_path, location, page_index, text in all_text_data:
-        text_embs = precomputed_embeddings.get(file_path)
-        if text_embs is None:
-            continue
-        for i, emb in enumerate(text_embs):
-            sims = np.dot(keyword_embeddings, emb)/(np.linalg.norm(keyword_embeddings, axis=1)*np.linalg.norm(emb))
-            max_score = float(np.max(sims))
-            if max_score >= threshold:
-                highlighted = highlight_terms_html(text, keywords)
+
+    query_variants = [query] + expand_query(query)
+    query_embeddings = model.encode(query_variants, convert_to_tensor=True)
+
+    for filename, text in all_texts.items():
+        sentences = text.split("\n")
+        sentence_embeddings = model.encode(sentences, convert_to_tensor=True)
+
+        cos_scores = util.cos_sim(query_embeddings, sentence_embeddings).max(0)
+        top_results = cos_scores.topk(3)
+
+        for score, idx in zip(top_results[0], top_results[1]):
+            if score.item() > 0.3:  # Filter weak matches
                 results.append({
-                    "file": file_path,
-                    "location": location,
-                    "page_index": page_index if page_index is not None else 0,
-                    "sentence": highlighted,
-                    "score": max_score
+                    "file": filename,
+                    "sentence": sentences[idx],
+                    "score": round(score.item() * 100, 2)
                 })
-    results.sort(key=lambda x: x["score"], reverse=True)
-    return results
 
-# -----------------------------
-# Export CSV
-# -----------------------------
-def export_results_csv(results):
-    if not results: return None
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
-    with open(temp_file.name, "w", newline="", encoding="utf-8") as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow(["File","Location","Sentence","Score"])
-        for r in results:
-            writer.writerow([r['file'], r['location'], re.sub("<[^>]+>", "", r['sentence']), f"{r['score']:.2f}"])
-    return temp_file.name
+    if not results:
+        return "No relevant matches found.", None, None
 
-# -----------------------------
-# Gradio UI
-# -----------------------------
-with gr.Blocks(title="Ultra Fast Document Explorer") as demo:
-    gr.Markdown("### Upload multiple documents (PDF, Word, ZIP). Semantic search with highlighted results.")
+    # Sort by score
+    results = sorted(results, key=lambda x: x["score"], reverse=True)
+
+    # Display results
+    table_output = "### Search Results\n| File | Relevance | Sentence |\n|------|-----------|----------|\n"
+    for r in results:
+        table_output += f"| {r['file']} | {r['score']}% | {r['sentence']} |\n"
+
+    # List of sentences for UI selection
+    sentences_list = [f"{r['file']} → {r['sentence']} ({r['score']}%)" for r in results]
+
+    return table_output, sentences_list, results
+
+# ========== Gradio UI ==========
+with gr.Blocks(css=".gradio-container {max-width: 900px !important}") as demo:
+    gr.Markdown("# Document Search Tool\nUpload PDFs, DOCX, or ZIP archives and search with AI-powered semantic matching.")
 
     with gr.Row():
-        with gr.Column(scale=1):
-            file_input = gr.File(label="Upload Documents", file_types=[".pdf",".docx",".zip"], file_types_multiple=True)
-            keyword_input = gr.Textbox(label="Keywords (comma separated)")
-            threshold_input = gr.Slider(label="Min Similarity", minimum=0, maximum=1, step=0.01, value=0.5)
-            export_btn = gr.File(label="Export CSV")
-        with gr.Column(scale=2):
-            sentence_display = gr.HTML(label="Highlighted Sentence")
-            results_table = gr.Dataframe(headers=["File","Location","Score"], datatype=["str","str","number"], interactive=True)
+        file_input = gr.File(
+            label="Upload Documents",
+            type="file",
+            file_types=[".pdf", ".docx", ".zip"]
+        )
+        query_input = gr.Textbox(label="Enter search term", placeholder="e.g., safety, engine, compliance")
 
-    all_text_data_store = gr.State()
-    search_results_store = gr.State()
-    selected_index = gr.State(0)
+    search_button = gr.Button("Search")
 
-    # -----------------------------
-    # File Upload Preprocessing
-    # -----------------------------
-    file_input.upload(fn=preprocess_files, inputs=file_input, outputs=[all_text_data_store])
+    with gr.Row():
+        output_md = gr.Markdown()
+    
+    with gr.Row():
+        results_list = gr.Dropdown(label="Select a result to view full context", choices=[])
+        context_output = gr.Textbox(label="Full Sentence Context", interactive=False)
 
-    # -----------------------------
-    # Semantic Search Trigger
-    # -----------------------------
-    def search_documents(query, all_text_data, threshold):
-        results = semantic_search(query, all_text_data, threshold)
-        table_data = [[r['file'], r['location'], round(r['score'],2)] for r in results]
-        return table_data, results, 0
+    def run_search(files, query):
+        table, sentences_list, results = semantic_search(files, query)
+        if not sentences_list:
+            return table, [], ""
+        return table, sentences_list, ""
 
-    keyword_input.change(search_documents,
-                         inputs=[keyword_input, all_text_data_store, threshold_input],
-                         outputs=[results_table, search_results_store, selected_index])
+    def show_context(selection, files, query):
+        _, _, results = semantic_search(files, query)
+        for r in results:
+            if r["file"] in selection and r["sentence"] in selection:
+                return f"From {r['file']}:\n\n{r['sentence']} (Relevance: {r['score']}%)"
+        return "Could not retrieve context."
 
-    # -----------------------------
-    # Show highlighted sentence on row select
-    # -----------------------------
-    def update_preview(index, results):
-        if not results or index < 0 or index >= len(results):
-            return ""
-        r = results[index]
-        return r['sentence']
+    search_button.click(
+        run_search,
+        inputs=[file_input, query_input],
+        outputs=[output_md, results_list, context_output]
+    )
 
-    results_table.select(update_preview, inputs=[selected_index, search_results_store], outputs=[sentence_display])
+    results_list.change(
+        show_context,
+        inputs=[results_list, file_input, query_input],
+        outputs=[context_output]
+    )
 
-    # -----------------------------
-    # Export CSV
-    # -----------------------------
-    export_btn.click(export_results_csv, inputs=[search_results_store], outputs=[export_btn])
-
-demo.launch()
+if __name__ == "__main__":
+    demo.launch()
