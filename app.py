@@ -6,19 +6,15 @@ import os
 import tempfile
 
 def extract_text_with_pages(file_path):
-    """
-    Extract text from PDF or Word file.
-    For PDFs, returns a list of tuples: (page_number, line)
-    For Word, returns list of lines with page number = None
-    """
+    """Extract text from PDF or Word file."""
     text_data = []
-    if file_path.endswith(".pdf"):
+    if file_path.lower().endswith(".pdf"):
         doc = fitz.open(file_path)
         for i, page in enumerate(doc):
             for line in page.get_text("text").split("\n"):
                 if line.strip():
                     text_data.append((i+1, line))
-    elif file_path.endswith(".docx"):
+    elif file_path.lower().endswith(".docx"):
         doc = Document(file_path)
         for p in doc.paragraphs:
             if p.text.strip():
@@ -30,9 +26,13 @@ def search_documents(files, keyword):
     temp_dir = tempfile.mkdtemp()
     all_files = []
 
+    # Convert uploaded files to a list if single file is uploaded
+    if not isinstance(files, list):
+        files = [files]
+
     # Extract files if zip, otherwise add directly
     for file in files:
-        if file.name.endswith(".zip"):
+        if file.name.lower().endswith(".zip"):
             with zipfile.ZipFile(file.name, 'r') as zip_ref:
                 zip_ref.extractall(temp_dir)
                 for root, _, filenames in os.walk(temp_dir):
@@ -63,12 +63,12 @@ def search_documents(files, keyword):
 demo = gr.Interface(
     fn=search_documents,
     inputs=[
-        gr.File(file_types=[".pdf", ".docx", ".zip"], label="Upload PDFs, Word files, or zip folders", file_types_multiple=True),
+        gr.File(label="Upload PDFs, Word files, or zip folders", type="file", file_types=[".pdf", ".docx", ".zip"], file_types_multiple=None),
         gr.Textbox(label="Keyword to search")
     ],
     outputs=gr.Textbox(label="Search Results", lines=20),
     title="Document Keyword Search",
-    description="Upload multiple PDFs, Word documents, or zip folders and search for keywords across all files. PDF matches show page numbers."
+    description="Upload multiple PDFs, Word documents, or zip folders and search for keywords. PDF matches show page numbers."
 )
 
 demo.launch()
