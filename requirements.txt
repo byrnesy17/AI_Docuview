@@ -3,4 +3,6 @@ PyMuPDF
 python-docx
 sentence-transformers
 numpy
+pandas
+Pillow
 torch
