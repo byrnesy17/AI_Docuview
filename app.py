@@ -1,94 +1,69 @@
 import gradio as gr
+from sentence_transformers import SentenceTransformer, util
 from PyPDF2 import PdfReader
-import docx
-import os
-from PIL import Image, ImageDraw, ImageFont
-import tempfile
+from docx import Document
+from io import BytesIO
+import re
+import pandas as pd
 
-def extract_text(file_path):
-    ext = os.path.splitext(file_path)[1].lower()
-    text = ""
-    if ext == ".pdf":
-        reader = PdfReader(file_path)
-        for page in reader.pages:
-            text += page.extract_text() + "\n"
-    elif ext == ".docx":
-        doc = docx.Document(file_path)
-        for para in doc.paragraphs:
-            text += para.text + "\n"
-    else:
-        text = ""
-    return text
+# Load small model from Hugging Face hub (fast & lightweight)
+model = SentenceTransformer('all-MiniLM-L6-v2')
 
-def highlight_term_in_text(text, term):
+# Extract text from PDF in-memory
+def extract_pdf_text(file_bytes):
+    pdf = PdfReader(BytesIO(file_bytes))
+    texts = []
+    for page in pdf.pages:
+        texts.append(page.extract_text())
+    return "\n".join(texts)
+
+# Extract text from DOCX in-memory
+def extract_docx_text(file_bytes):
+    doc = Document(BytesIO(file_bytes))
+    return "\n".join([p.text for p in doc.paragraphs])
+
+# Search text in all uploaded files
+def search_documents(files, query):
     results = []
-    term_lower = term.lower()
-    for line in text.splitlines():
-        if term_lower in line.lower():
-            results.append(line.strip())
-    return results
-
-def create_highlight_image(sentence, term):
-    font_size = 20
-    font = ImageFont.load_default()
-    lines = [sentence]
-
-    # Calculate image size
-    width = max([font.getsize(line)[0] for line in lines]) + 20
-    height = len(lines) * (font.getsize(lines[0])[1] + 10) + 20
-
-    img = Image.new('RGB', (width, height), color='white')
-    draw = ImageDraw.Draw(img)
-
-    y_text = 10
-    for line in lines:
-        start = line.lower().find(term.lower())
-        if start != -1:
-            # Draw text before term
-            draw.text((10, y_text), line[:start], fill='black', font=font)
-            # Draw highlighted term
-            term_width = font.getsize(line[start:start+len(term)])[0]
-            draw.rectangle([10 + font.getsize(line[:start])[0], y_text, 10 + font.getsize(line[:start])[0]+term_width, y_text+font.getsize(line[start:start+len(term)])[1]], fill='yellow')
-            draw.text((10 + font.getsize(line[:start])[0], y_text), line[start:start+len(term)], fill='black', font=font)
-            # Draw rest of line
-            draw.text((10 + font.getsize(line[:start+len(term)])[0], y_text), line[start+len(term):], fill='black', font=font)
+    for uploaded_file in files:
+        name = uploaded_file.name
+        content = None
+        if name.lower().endswith(".pdf"):
+            content = extract_pdf_text(uploaded_file.read())
+        elif name.lower().endswith(".docx"):
+            content = extract_docx_text(uploaded_file.read())
         else:
-            draw.text((10, y_text), line, fill='black', font=font)
-        y_text += font.getsize(line)[1] + 10
+            continue
 
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
-    img.save(temp_file.name)
-    return temp_file.name
+        # Split into sentences
+        sentences = re.split(r'(?<=[.!?]) +', content)
+        for sentence in sentences:
+            if query.lower() in sentence.lower():
+                # Highlight the match
+                highlighted = re.sub(f"({re.escape(query)})", r"<mark>\1</mark>", sentence, flags=re.IGNORECASE)
+                results.append({
+                    "file": name,
+                    "sentence": highlighted
+                })
 
-def search_files(files, term):
-    output = []
-    images = []
-    for f in files:
-        text = extract_text(f.name)
-        sentences = highlight_term_in_text(text, term)
-        for s in sentences:
-            img_path = create_highlight_image(s, term)
-            output.append(f"{os.path.basename(f.name)}: {s}")
-            images.append(img_path)
-    return output, images
+    df = pd.DataFrame(results)
+    return df.to_dict(orient="records")
 
+# Gradio UI
 with gr.Blocks() as demo:
     gr.Markdown("## Document Search Tool")
+    
     with gr.Row():
-        file_input = gr.File(
-            label="Upload Documents",
-            file_types=[".pdf", ".docx", ".zip"],
-            file_types_multiple=False  # remove old param
-        )
-        search_term = gr.Textbox(label="Search Term")
-    search_btn = gr.Button("Search")
-    results = gr.Dataframe(headers=["Results"], interactive=False)
-    result_images = gr.Gallery(label="Highlighted Text").style(grid=[1], height="auto")
+        file_input = gr.File(label="Upload Documents", file_types=[".pdf", ".docx"], file_types_multiple=True)
+        search_input = gr.Textbox(label="Search Query", placeholder="Enter word or phrase...")
+        search_button = gr.Button("Search")
+    
+    result_table = gr.Dataframe(headers=["File", "Sentence"], interactive=False)
 
-    search_btn.click(
-        fn=search_files,
-        inputs=[file_input, search_term],
-        outputs=[results, result_images]
+    search_button.click(
+        search_documents,
+        inputs=[file_input, search_input],
+        outputs=result_table
     )
 
 demo.launch()
