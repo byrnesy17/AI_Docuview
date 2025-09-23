@@ -62,11 +62,10 @@ def search_documents(files, keyword):
 demo = gr.Interface(
     fn=search_documents,
     inputs=[
-        gr.File(
+        gr.Files(  # ✅ Changed from gr.File to gr.Files for multiple uploads
             label="Upload PDFs, Word files, or zip folders",
             type="filepath",
-            file_types=[".pdf", ".docx", ".zip"],
-            file_types=True  # ✅ allows multiple uploads
+            file_types=[".pdf", ".docx", ".zip"]
         ),
         gr.Textbox(label="Keyword to search")
     ],
