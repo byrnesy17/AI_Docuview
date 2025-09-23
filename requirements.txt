@@ -1,3 +1,5 @@
 gradio
-pymupdf
+PyMuPDF
 python-docx
+openai
+numpy
