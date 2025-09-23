@@ -1,195 +1,210 @@
 import gradio as gr
 import fitz
 from docx import Document
-import zipfile, os, tempfile, shutil, io, base64, re
+import zipfile, os, tempfile, re, hashlib, asyncio
 import numpy as np
-from PIL import Image, ImageDraw
-import pandas as pd
 from sentence_transformers import SentenceTransformer
+from nltk.corpus import wordnet
+import matplotlib.pyplot as plt
+import seaborn as sns
+from io import BytesIO
 
-# -------------------------------
-# Initialize model
-# -------------------------------
+# -----------------------------
+# Initialize semantic model
+# -----------------------------
 model = SentenceTransformer('all-MiniLM-L6-v2')
 
-# -------------------------------
+# -----------------------------
+# Caching
+# -----------------------------
+highlight_cache = {}
+precomputed_embeddings = {}
+
+# -----------------------------
 # Helper Functions
-# -------------------------------
-def extract_text(file_path):
+# -----------------------------
+def expand_keywords(keywords):
+    expanded = set()
+    for kw in keywords:
+        expanded.add(kw)
+        for syn in wordnet.synsets(kw):
+            for lemma in syn.lemmas():
+                expanded.add(lemma.name().replace("_"," "))
+    return list(expanded)
+
+def extract_text_chunks(file_path, chunk_size=500):
+    """Splits text into smaller chunks for faster embeddings."""
     text_data = []
     if file_path.lower().endswith(".pdf"):
         doc = fitz.open(file_path)
         for i, page in enumerate(doc):
-            for line in page.get_text("text").split("\n"):
-                if line.strip():
-                    text_data.append((f"Page {i+1}", i, line))
+            page_text = page.get_text("text").strip()
+            if page_text:
+                lines = page_text.split("\n")
+                chunk = ""
+                for line in lines:
+                    if len(chunk) + len(line) < chunk_size:
+                        chunk += line + " "
+                    else:
+                        text_data.append((file_path, f"Page {i+1}", i, chunk.strip()))
+                        chunk = line + " "
+                if chunk.strip():
+                    text_data.append((file_path, f"Page {i+1}", i, chunk.strip()))
     elif file_path.lower().endswith(".docx"):
         doc = Document(file_path)
         for idx, p in enumerate(doc.paragraphs, start=1):
-            if p.text.strip():
-                text_data.append((f"Paragraph {idx}", None, p.text))
+            text = p.text.strip()
+            if text:
+                text_data.append((file_path, f"Paragraph {idx}", None, text))
     return text_data
 
-def process_file(file_path, temp_dir):
-    texts = []
+def assign_colors(keywords):
+    import random
+    random.seed(42)
+    colors = ["#FFB6C1","#87CEFA","#90EE90","#FFA500","#DA70D6","#FFFF00","#00CED1","#FF6347"]
+    return {kw: colors[i % len(colors)] for i, kw in enumerate(keywords)}
+
+def highlight_terms_html(text, keywords):
+    color_map = assign_colors(keywords)
+    def repl(m):
+        kw = m.group(0)
+        return f"<mark style='background-color:{color_map.get(kw.lower(), 'yellow')}'>{kw}</mark>"
+    pattern = re.compile("|".join(re.escape(k.strip()) for k in keywords), re.IGNORECASE)
+    return pattern.sub(repl, text)
+
+# -----------------------------
+# Async Preprocessing with Embeddings
+# -----------------------------
+async def preprocess_file_async(file_path, temp_dir, chunk_size=500):
+    all_text_data = []
+    # Handle ZIP extraction
+    files_to_process = []
     if file_path.lower().endswith(".zip"):
         extract_path = tempfile.mkdtemp(dir=temp_dir)
         with zipfile.ZipFile(file_path, "r") as zip_ref:
             zip_ref.extractall(extract_path)
-        for root, _, filenames in os.walk(extract_path):
-            for f in filenames:
-                if f.lower().endswith((".pdf", ".docx")):
-                    texts.extend([(f, loc, line) for loc, page_idx, line in extract_text(os.path.join(root, f))])
+        for root, _, files in os.walk(extract_path):
+            for f in files:
+                if f.lower().endswith((".pdf",".docx")):
+                    files_to_process.append(os.path.join(root, f))
     else:
-        texts.extend([(os.path.basename(file_path), loc, line) for loc, page_idx, line in extract_text(file_path)])
-    return texts
+        files_to_process.append(file_path)
 
-def compute_embeddings(lines, batch_size=50):
-    embeddings = []
-    for i in range(0, len(lines), batch_size):
-        batch = lines[i:i+batch_size]
-        batch_emb = model.encode(batch, convert_to_numpy=True)
-        embeddings.extend(batch_emb)
-    return embeddings
+    for f in files_to_process:
+        chunks = extract_text_chunks(f, chunk_size)
+        all_text_data.extend(chunks)
+        # Precompute embeddings
+        texts = [c[3] for c in chunks]
+        if texts:
+            precomputed_embeddings[f] = model.encode(texts, convert_to_numpy=True)
+    return all_text_data
 
-def highlight_terms_html(text, keywords):
-    pattern = re.compile("|".join(re.escape(k.strip()) for k in keywords), re.IGNORECASE)
-    return pattern.sub(lambda m: f"<mark style='background-color:yellow'>{m.group(0)}</mark>", text)
-
-def get_pdf_image_base64(file_path, page_index, sentence):
-    doc = fitz.open(file_path)
-    page = doc[page_index]
-    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-    draw = ImageDraw.Draw(img)
-    try:
-        text_instances = page.search_for(sentence)
-        for inst in text_instances:
-            x0, y0, x1, y1 = inst[:4]
-            draw.rectangle([x0*2, y0*2, x1*2, y1*2], outline="red", width=3)
-    except:
-        pass
-    buffered = io.BytesIO()
-    img.save(buffered, format="PNG")
-    return base64.b64encode(buffered.getvalue()).decode("utf-8")
-
-# -------------------------------
-# Build interactive table with live filter
-# -------------------------------
-def build_interactive_table(top_results, pdf_images):
-    table_html = """
-    <input type="text" id="searchBox" placeholder="Filter by keyword, file, similarity %" 
-        style="width: 100%; padding:5px; margin-bottom:10px; font-size:16px;">
-    <table id="resultsTable" border='1' style='border-collapse:collapse;width:100%;'>
-    <tr><th>Keyword</th><th>File</th><th>Location</th><th>Sentence</th><th>Similarity %</th></tr>
-    """
-
-    for score, kw, f, loc, line, hl in top_results:
-        row_id = re.sub(r'\W','', f"{f}_{loc}_{score*100:.1f}")
-        imgs_html = "".join([f'<img src="data:image/png;base64,{b64img}" style="max-width:400px;margin:5px;">' 
-                             for b64img in pdf_images.get(f, [])])
-        table_html += f"""
-        <tr onclick="document.getElementById('{row_id}').style.display =
-        document.getElementById('{row_id}').style.display=='none'?'table-row':'none';"
-        style="cursor:pointer;background-color:rgba({int(255*(1-score))},{int(255*score)},0,0.3)">
-        <td>{kw}</td><td>{f}</td><td>{loc}</td><td>{hl}</td><td>{score*100:.1f}%</td></tr>
-        <tr id="{row_id}" style="display:none;"><td colspan='5'>{imgs_html}<br><b>Full Sentence:</b> {line}</td></tr>
-        """
-    table_html += "</table>"
-
-    # JS for live filtering
-    table_html += """
-    <script>
-    const searchBox = document.getElementById('searchBox');
-    searchBox.addEventListener('input', function(){
-        const filter = searchBox.value.toLowerCase();
-        const table = document.getElementById('resultsTable');
-        const trs = table.getElementsByTagName('tr');
-        for (let i = 1; i < trs.length; i+=2) {
-            const tds = trs[i].getElementsByTagName('td');
-            const text = Array.from(tds).map(td=>td.innerText.toLowerCase()).join(" ");
-            trs[i].style.display = text.includes(filter) ? '' : 'none';
-            const detailRow = trs[i+1];
-            if(detailRow) detailRow.style.display = 'none';
-        }
-    });
-    </script>
-    """
-    return table_html
-
-# -------------------------------
-# Semantic Search
-# -------------------------------
-def semantic_search(files, query_str, similarity_threshold=0.5):
-    if not files:
-        return {"status":"Please upload files.","progress":0}, None, None
-
-    keywords = [k.strip() for k in query_str.split(",") if k.strip()]
-    if not keywords:
-        return {"status":"Please enter valid keywords.","progress":0}, None, None
-
+async def preprocess_files_async(files, progress=gr.Progress()):
     temp_dir = tempfile.mkdtemp()
+    total = len(files)
     all_text_data = []
 
-    for idx, file in enumerate(files, start=1):
-        all_text_data.extend(process_file(file, temp_dir))
+    for idx, file in enumerate(files):
+        progress((idx+1)/total, f"Processing {os.path.basename(file)} ({idx+1}/{total})")
+        chunks = await preprocess_file_async(file, temp_dir)
+        all_text_data.extend(chunks)
+    return all_text_data
 
-    if not all_text_data:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        return {"status":"No readable content found.","progress":100}, None, None
+# -----------------------------
+# Semantic Search using Vectorized NumPy
+# -----------------------------
+def semantic_search_vector(query, all_text_data, threshold=0.5):
+    if not query.strip() or not all_text_data:
+        return []
 
-    lines = [line for _, _, line in all_text_data]
-    embeddings = compute_embeddings(lines)
+    base_keywords = [k.strip() for k in query.split(",") if k.strip()]
+    keywords = expand_keywords(base_keywords)
     keyword_embeddings = model.encode(keywords, convert_to_numpy=True)
 
     results = []
-    pdf_images = {}
+    for idx, (file_path, location, page_index, text) in enumerate(all_text_data):
+        text_embs = precomputed_embeddings.get(file_path)
+        if text_embs is None:
+            continue
+        for i, emb in enumerate(text_embs):
+            sims = np.dot(keyword_embeddings, emb)/(np.linalg.norm(keyword_embeddings, axis=1)*np.linalg.norm(emb))
+            max_score = float(np.max(sims))
+            if max_score >= threshold:
+                highlighted = highlight_terms_html(text, keywords)
+                results.append({
+                    "file": file_path,
+                    "location": location,
+                    "page_index": page_index if page_index is not None else 0,
+                    "sentence": highlighted,
+                    "score": max_score,
+                    "keywords": keywords,
+                    "type": os.path.splitext(file_path)[1].lower()
+                })
+    results.sort(key=lambda x: x["score"], reverse=True)
+    return results
 
-    for ((file_name, loc, line), emb) in zip(all_text_data, embeddings):
-        for kw, kw_emb in zip(keywords, keyword_embeddings):
-            score = float(np.dot(kw_emb, emb)/(np.linalg.norm(kw_emb)*np.linalg.norm(emb)))
-            if score >= similarity_threshold:
-                highlighted_line = highlight_terms_html(line, [kw])
-                results.append((score, kw, file_name, loc, line, highlighted_line))
-                if file_name.lower().endswith(".pdf"):
-                    page_index = int(re.findall(r'\d+', loc)[0])-1
-                    if file_name not in pdf_images:
-                        pdf_images[file_name] = []
-                    pdf_images[file_name].append(get_pdf_image_base64(file_name, page_index, line))
-
-    results.sort(reverse=True, key=lambda x: x[0])
-    top_results = results[:100]
-
-    table_html = build_interactive_table(top_results, pdf_images)
-
-    summary_html = pd.DataFrame([{"File":f, 
-                                  "Total Matches":len([r for r in top_results if r[2]==f]), 
-                                  "Average Similarity %":f"{np.mean([r[0] for r in top_results if r[2]==f])*100:.1f}%",
-                                  "Top Sentences":"<br>".join([r[5] for r in top_results if r[2]==f][:5])} 
-                                  for f in set(r[2] for r in top_results)]
-                               ).to_html(escape=False, index=False)
-
-    shutil.rmtree(temp_dir, ignore_errors=True)
-    return {"status": "Search complete.","progress":100}, table_html, summary_html
-
-# -------------------------------
-# Gradio Interface
-# -------------------------------
-with gr.Blocks(title="Advanced Document Keyword & Semantic Search") as demo:
-    gr.Markdown("### Upload multiple PDFs, Word documents, or ZIPs and search with intelligent semantic matching.")
+# -----------------------------
+# Gradio UI (simplified for clarity)
+# -----------------------------
+with gr.Blocks(title="Ultra Fast Document Explorer") as demo:
+    gr.Markdown("### Upload multiple documents (PDF, Word, ZIP). Semantic search with highlighted results and fast performance.")
+    
     with gr.Row():
         with gr.Column(scale=1):
-            file_input = gr.File(file_types=[".pdf",".docx",".zip"], file_types_multiple=True, label="Upload Documents")
-            keyword_input = gr.Textbox(label="Keywords (comma-separated)")
-            search_btn = gr.Button("Search")
-            progress_info = gr.Label(value="Status: Waiting for input...")
-            progress_bar = gr.Progress()
+            file_input = gr.File(label="Upload Documents", file_types=[".pdf",".docx",".zip"], file_types="multiple")
+            keyword_input = gr.Textbox(label="Keywords (comma separated)")
+            threshold_input = gr.Slider(label="Min Similarity", minimum=0, maximum=1, step=0.01, value=0.5)
+            export_btn = gr.File(label="Export CSV")
         with gr.Column(scale=2):
-            result_html = gr.HTML(label="Results Table")
-            summary_html = gr.HTML(label="Summary")
+            sentence_display = gr.HTML(label="Highlighted Sentence")
+            results_table = gr.Dataframe(headers=["File","Location","Score"], datatype=["str","str","number"], interactive=True)
+    
+    all_text_data_store = gr.State()
+    search_results_store = gr.State()
+    selected_index = gr.State(0)
 
-    search_btn.click(semantic_search, 
-                     inputs=[file_input, keyword_input], 
-                     outputs=[progress_info, result_html, summary_html])
+    # -----------------------------
+    # File Upload Preprocessing
+    # -----------------------------
+    file_input.upload(fn=preprocess_files_async, inputs=file_input, outputs=[all_text_data_store])
+
+    # -----------------------------
+    # Semantic Search Trigger
+    # -----------------------------
+    def search_documents(query, all_text_data, threshold):
+        results = semantic_search_vector(query, all_text_data, threshold)
+        table_data = [[r['file'], r['location'], round(r['score'],2)] for r in results]
+        return table_data, results, 0
+
+    keyword_input.change(search_documents,
+                         inputs=[keyword_input, all_text_data_store, threshold_input],
+                         outputs=[results_table, search_results_store, selected_index])
+
+    # -----------------------------
+    # Show highlighted sentence on row select
+    # -----------------------------
+    def update_preview(index, results):
+        if not results or index < 0 or index >= len(results):
+            return ""
+        r = results[index]
+        return r['sentence']
+
+    results_table.select(update_preview, inputs=[selected_index, search_results_store], outputs=[sentence_display])
+
+    # -----------------------------
+    # Export CSV
+    # -----------------------------
+    def export_results_csv(results):
+        if not results: return None
+        import csv, tempfile, re
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
+        with open(temp_file.name, "w", newline="", encoding="utf-8") as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(["File","Location","Sentence","Score"])
+            for r in results:
+                writer.writerow([r['file'], r['location'], re.sub("<[^>]+>", "", r['sentence']), f"{r['score']:.2f}"])
+        return temp_file.name
+
+    export_btn.click(export_results_csv, inputs=[search_results_store], outputs=[export_btn])
 
 demo.launch()
