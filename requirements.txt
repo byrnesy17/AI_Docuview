@@ -1,9 +1,5 @@
 gradio
-PyMuPDF
-python-docx
-sentence-transformers
-numpy
-pandas
-Pillow
-torch
 nltk
+python-docx
+pypdf
+sentence-transformers
