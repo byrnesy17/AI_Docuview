@@ -1,13 +1,16 @@
 import gradio as gr
-import fitz  # PyMuPDF
+import fitz
 from docx import Document
-import zipfile
-import os
-import tempfile
-import shutil
+import zipfile, os, tempfile, shutil
+import numpy as np
+from openai import OpenAI
+from concurrent.futures import ThreadPoolExecutor
 
-def extract_text_with_pages(file_path):
-    """Extracts text from PDF or Word document and returns list of (location, text)."""
+# Initialize OpenAI client
+client = OpenAI(api_key="YOUR_API_KEY")  # Replace with your key
+
+def extract_text(file_path):
+    """Extract text from PDF or DOCX with page/paragraph info."""
     text_data = []
     if file_path.lower().endswith(".pdf"):
         doc = fitz.open(file_path)
@@ -22,63 +25,95 @@ def extract_text_with_pages(file_path):
                 text_data.append((f"Paragraph {idx}", p.text))
     return text_data
 
-def search_documents(files, keyword):
-    """Search for keyword in uploaded files (PDF, DOCX, ZIP)."""
-    results = ""
+def embed_texts(texts, batch_size=50):
+    """Compute embeddings for a list of texts in batches for speed."""
+    embeddings = []
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i:i+batch_size]
+        response = client.embeddings.create(
+            model="text-embedding-3-small",
+            input=batch
+        )
+        embeddings.extend([np.array(e.embedding) for e in response.data])
+    return embeddings
+
+def cosine_similarity(a, b):
+    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+
+def process_files(files):
+    """Extract text and compute embeddings for all files (parallelized)."""
     temp_dir = tempfile.mkdtemp()
-    all_files = []
+    all_text_data = []  # List of tuples: (file_name, location, text)
 
-    # Ensure files is always a list
-    if not isinstance(files, list):
-        files = [files]
-
-    # Extract files and collect all PDFs/DOCs
-    for file in files:
-        if file.lower().endswith(".zip"):
-            with zipfile.ZipFile(file, 'r') as zip_ref:
-                extract_path = tempfile.mkdtemp(dir=temp_dir)
+    def process_file(file_path):
+        texts = []
+        if file_path.lower().endswith(".zip"):
+            extract_path = tempfile.mkdtemp(dir=temp_dir)
+            with zipfile.ZipFile(file_path, 'r') as zip_ref:
                 zip_ref.extractall(extract_path)
                 for root, _, filenames in os.walk(extract_path):
                     for f in filenames:
                         if f.lower().endswith((".pdf", ".docx")):
-                            all_files.append(os.path.join(root, f))
+                            texts.extend([(f, loc, line) for loc, line in extract_text(os.path.join(root, f))])
         else:
-            all_files.append(file)
+            texts.extend([(os.path.basename(file_path), loc, line) for loc, line in extract_text(file_path)])
+        return texts
 
-    # Search keyword in all files
-    for file_path in all_files:
-        text_data = extract_text_with_pages(file_path)
-        matches = []
-        for location, line in text_data:
-            if keyword.lower() in line.lower():
-                # Optional: highlight keyword in line
-                highlighted = line.replace(keyword, f"**{keyword}**")
-                matches.append(f"{location}: {highlighted}")
+    # Parallel processing for speed
+    with ThreadPoolExecutor() as executor:
+        for result in executor.map(process_file, files):
+            all_text_data.extend(result)
 
-        if matches:
-            results += f"--- {os.path.basename(file_path)} ---\n"
-            results += "\n".join(matches) + "\n\n"
+    # Separate text for embeddings
+    text_only = [line for _, _, line in all_text_data]
+    embeddings = embed_texts(text_only)
+    # Store embeddings with corresponding metadata
+    data_with_embeddings = []
+    for (file_name, loc, text), emb in zip(all_text_data, embeddings):
+        data_with_embeddings.append((file_name, loc, text, emb))
 
-    if results == "":
-        results = "No matches found."
+    return data_with_embeddings, temp_dir
 
-    # Clean up temporary directory
+def semantic_search(files, query):
+    """Main function: processes files, computes embeddings, searches semantically."""
+    data_with_embeddings, temp_dir = process_files(files)
+
+    # Embed the query
+    query_emb = embed_texts([query])[0]
+
+    # Compute similarity for all lines
+    results = []
+    for file_name, loc, text, emb in data_with_embeddings:
+        score = cosine_similarity(query_emb, emb)
+        if score > 0.5:  # threshold for relevance
+            results.append((score, file_name, loc, text))
+
+    # Sort by relevance descending
+    results.sort(reverse=True, key=lambda x: x[0])
+
+    # Format output
+    output = ""
+    for score, file_name, loc, text in results[:100]:  # limit top 100 results
+        output += f"[{score*100:.1f}%] {file_name} - {loc}: {text}\n\n"
+
+    if output == "":
+        output = "No relevant matches found."
+
+    # Cleanup
     shutil.rmtree(temp_dir, ignore_errors=True)
-    return results
+    return output
 
-demo = gr.Interface(
-    fn=search_documents,
-    inputs=[
-        gr.Files(
-            label="Upload PDFs, Word files, or zip folders",
-            type="filepath",
-            file_types=[".pdf", ".docx", ".zip"]
-        ),
-        gr.Textbox(label="Keyword to search")
-    ],
-    outputs=gr.Textbox(label="Search Results", lines=25),
-    title="Document Keyword Search",
-    description="Upload PDFs, Word documents, or zip folders and search for keywords across all files. PDF matches show page numbers, Word matches show paragraph numbers."
-)
+# Gradio UI
+with gr.Blocks() as demo:
+    gr.Markdown("# AI-Powered Document Search")
+    with gr.Row():
+        with gr.Column():
+            file_input = gr.Files(label="Upload PDFs, Word Docs, or ZIPs", file_types=[".pdf",".docx",".zip"])
+            query_input = gr.Textbox(label="Enter search query", placeholder="e.g., cars, engines, vehicles")
+            search_btn = gr.Button("Search")
+        with gr.Column():
+            output = gr.Textbox(label="Results", lines=25)
+
+    search_btn.click(semantic_search, inputs=[file_input, query_input], outputs=output)
 
 demo.launch()
