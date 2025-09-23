@@ -1,7 +1,7 @@
 import gradio as gr
 import fitz
 from docx import Document
-import zipfile, os, tempfile, re, hashlib, asyncio
+import zipfile, os, tempfile, re
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from nltk.corpus import wordnet
@@ -61,46 +61,41 @@ def highlight_terms_html(text, keywords):
     return pattern.sub(repl, text)
 
 # -----------------------------
-# Async Preprocessing
+# Preprocessing
 # -----------------------------
-async def preprocess_file_async(file_path, temp_dir, chunk_size=500):
+def preprocess_files(files):
+    temp_dir = tempfile.mkdtemp()
+    if not isinstance(files, list):
+        files = [files]
+
     all_text_data = []
     files_to_process = []
-    if file_path.lower().endswith(".zip"):
-        extract_path = tempfile.mkdtemp(dir=temp_dir)
-        with zipfile.ZipFile(file_path, "r") as zip_ref:
-            zip_ref.extractall(extract_path)
-        for root, _, files in os.walk(extract_path):
-            for f in files:
-                if f.lower().endswith((".pdf",".docx")):
-                    files_to_process.append(os.path.join(root, f))
-    else:
-        files_to_process.append(file_path)
+
+    for file in files:
+        if file.lower().endswith(".zip"):
+            extract_path = tempfile.mkdtemp(dir=temp_dir)
+            with zipfile.ZipFile(file, "r") as zip_ref:
+                zip_ref.extractall(extract_path)
+            for root, _, filenames in os.walk(extract_path):
+                for f in filenames:
+                    if f.lower().endswith((".pdf",".docx")):
+                        files_to_process.append(os.path.join(root, f))
+        else:
+            files_to_process.append(file)
 
     for f in files_to_process:
-        chunks = extract_text_chunks(f, chunk_size)
+        chunks = extract_text_chunks(f)
         all_text_data.extend(chunks)
         texts = [c[3] for c in chunks]
         if texts:
             precomputed_embeddings[f] = model.encode(texts, convert_to_numpy=True)
-    return all_text_data
 
-async def preprocess_files_async(files, progress=gr.Progress()):
-    temp_dir = tempfile.mkdtemp()
-    if not isinstance(files, list):
-        files = [files]
-    total = len(files)
-    all_text_data = []
-    for idx, file in enumerate(files):
-        progress((idx+1)/total, f"Processing {os.path.basename(file)} ({idx+1}/{total})")
-        chunks = await preprocess_file_async(file, temp_dir)
-        all_text_data.extend(chunks)
     return all_text_data
 
 # -----------------------------
 # Semantic Search
 # -----------------------------
-def semantic_search_vector(query, all_text_data, threshold=0.5):
+def semantic_search(query, all_text_data, threshold=0.5):
     if not query.strip() or not all_text_data:
         return []
 
@@ -149,7 +144,7 @@ with gr.Blocks(title="Ultra Fast Document Explorer") as demo:
 
     with gr.Row():
         with gr.Column(scale=1):
-            file_input = gr.File(label="Upload Documents", file_types=[".pdf",".docx",".zip"], file_types=None)  # corrected
+            file_input = gr.File(label="Upload Documents", file_types=[".pdf",".docx",".zip"], file_types_multiple=True)
             keyword_input = gr.Textbox(label="Keywords (comma separated)")
             threshold_input = gr.Slider(label="Min Similarity", minimum=0, maximum=1, step=0.01, value=0.5)
             export_btn = gr.File(label="Export CSV")
@@ -164,13 +159,13 @@ with gr.Blocks(title="Ultra Fast Document Explorer") as demo:
     # -----------------------------
     # File Upload Preprocessing
     # -----------------------------
-    file_input.upload(fn=preprocess_files_async, inputs=file_input, outputs=[all_text_data_store])
+    file_input.upload(fn=preprocess_files, inputs=file_input, outputs=[all_text_data_store])
 
     # -----------------------------
     # Semantic Search Trigger
     # -----------------------------
     def search_documents(query, all_text_data, threshold):
-        results = semantic_search_vector(query, all_text_data, threshold)
+        results = semantic_search(query, all_text_data, threshold)
         table_data = [[r['file'], r['location'], round(r['score'],2)] for r in results]
         return table_data, results, 0
 
@@ -195,3 +190,4 @@ with gr.Blocks(title="Ultra Fast Document Explorer") as demo:
     export_btn.click(export_results_csv, inputs=[search_results_store], outputs=[export_btn])
 
 demo.launch()
+
