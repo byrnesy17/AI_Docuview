@@ -1,5 +1,5 @@
-gradio
-nltk
-python-docx
-pypdf
-sentence-transformers
+gradio>=3.40
+sentence-transformers>=2.2.2
+PyPDF2>=3.1.0
+python-docx>=0.8.11
+pandas>=2.0
