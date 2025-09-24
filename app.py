@@ -7,7 +7,7 @@ import nltk
 from nltk.corpus import wordnet
 import re
 
-# Make sure nltk data is available
+# Ensure NLTK data is available
 nltk.download("punkt", quiet=True)
 nltk.download("wordnet", quiet=True)
 
@@ -86,7 +86,7 @@ def expand_query(query):
 # -------------------------------
 def highlight_text(text, keywords):
     """Highlight all occurrences of keywords in text."""
-    for kw in sorted(keywords, key=len, reverse=True):  # longer words first
+    for kw in sorted(keywords, key=len, reverse=True):
         regex = re.compile(rf"\b({re.escape(kw)})\b", re.IGNORECASE)
         text = regex.sub(r"**🟨\1🟨**", text)
     return text
@@ -139,7 +139,7 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
             label="Upload Documents",
             type="filepath",
             file_types=[".pdf", ".docx", ".zip"],
-            file_types_multiple=True   # ✅ correct for multiple files
+            file_count="multiple"   # ✅ correct parameter for multiple files
         )
 
     with gr.Row():
