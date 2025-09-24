@@ -1,137 +1,115 @@
 import gradio as gr
-import os
-import zipfile
 from PyPDF2 import PdfReader
 import docx
+import os
+import zipfile
 import nltk
+from nltk.corpus import wordnet
 
-# Download NLTK data
 nltk.download("wordnet")
 
-# ---------------------------
-# File reading functions
-# ---------------------------
+# --- File Reading Functions ---
 def read_pdf(file_path):
     try:
         pdf = PdfReader(file_path)
         text = ""
         for page in pdf.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
-        return text.strip()
+            text += page.extract_text() + "\n"
+        return text
     except Exception as e:
-        return f"Error reading PDF: {e}"
+        return f"Error reading PDF {file_path}: {str(e)}"
 
 def read_docx(file_path):
     try:
         doc = docx.Document(file_path)
-        text = "\n".join([p.text for p in doc.paragraphs])
-        return text.strip()
+        return "\n".join([p.text for p in doc.paragraphs])
     except Exception as e:
-        return f"Error reading DOCX: {e}"
+        return f"Error reading DOCX {file_path}: {str(e)}"
 
-# ---------------------------
-# Highlight search term
-# ---------------------------
-def highlight_term(text, term):
-    if not term:
-        return text
-    import re
-    pattern = re.compile(re.escape(term), re.IGNORECASE)
-    return pattern.sub(lambda m: f"**{m.group(0)}**", text)
-
-# ---------------------------
-# Process uploaded files
-# ---------------------------
-def process_files(files, search_term=None):
-    if not files:
-        return "", "No files uploaded."
-
-    file_cards = ""
+def read_zip(file_path):
     extracted_texts = []
+    try:
+        with zipfile.ZipFile(file_path, 'r') as zip_ref:
+            zip_ref.extractall("temp_zip")
+            for filename in zip_ref.namelist():
+                ext = os.path.splitext(filename)[1].lower()
+                full_path = os.path.join("temp_zip", filename)
+                if ext == ".pdf":
+                    extracted_texts.append((filename, read_pdf(full_path)))
+                elif ext == ".docx":
+                    extracted_texts.append((filename, read_docx(full_path)))
+                else:
+                    extracted_texts.append((filename, f"Unsupported file in zip: {filename}"))
+        return extracted_texts
+    except Exception as e:
+        return [("ZIP Error", f"Error reading ZIP {file_path}: {str(e)}")]
 
-    all_files_to_process = []
+# --- Process Uploaded Files & Dashboard ---
+def process_files(files, search_term=""):
+    tab_texts = []
+    stats = {"Total Files": len(files), "PDF":0, "DOCX":0, "ZIP":0, "Unsupported":0, "Word Counts":{}}
 
-    # Handle zip files
     for file in files:
         ext = os.path.splitext(file.name)[1].lower()
-        if ext == ".zip":
-            try:
-                with zipfile.ZipFile(file.name, 'r') as zip_ref:
-                    for zip_file in zip_ref.namelist():
-                        zip_ext = os.path.splitext(zip_file)[1].lower()
-                        if zip_ext in [".pdf", ".docx"]:
-                            zip_ref.extract(zip_file, "/tmp")
-                            all_files_to_process.append(os.path.join("/tmp", zip_file))
-                        else:
-                            file_cards += f"- {zip_file} : Unsupported inside zip\n"
-                file_cards += f"- {file.name} : ZIP processed\n"
-            except Exception as e:
-                file_cards += f"- {file.name} : Failed to extract zip ({e})\n"
-        else:
-            all_files_to_process.append(file.name)
-
-    # Process PDFs and DOCX
-    for file_path in all_files_to_process:
-        ext = os.path.splitext(file_path)[1].lower()
         if ext == ".pdf":
-            text = read_pdf(file_path)
-            status = "Processed"
+            content = read_pdf(file.name)
+            stats["PDF"] += 1
         elif ext == ".docx":
-            text = read_docx(file_path)
-            status = "Processed"
+            content = read_docx(file.name)
+            stats["DOCX"] += 1
+        elif ext == ".zip":
+            zip_contents = read_zip(file.name)
+            stats["ZIP"] += 1
+            tab_texts.extend(zip_contents)
+            continue
         else:
-            text = f"Unsupported file type: {ext}"
-            status = "Unsupported"
+            content = f"Unsupported file type: {ext}"
+            stats["Unsupported"] += 1
 
-        file_cards += f"- {os.path.basename(file_path)} : {status}\n"
+        tab_texts.append((file.name, content))
 
-        if search_term and ext in [".pdf", ".docx"]:
-            text = highlight_term(text, search_term)
+    # Highlight search term
+    if search_term.strip():
+        highlighted_tabs = []
+        for fname, text in tab_texts:
+            highlighted_text = text.replace(search_term, f"**{search_term}**")
+            highlighted_tabs.append((fname, highlighted_text))
+        tab_texts = highlighted_tabs
 
-        extracted_texts.append(f"### {os.path.basename(file_path)}\n{text}\n\n---\n\n")
+    # Word counts
+    for fname, text in tab_texts:
+        stats["Word Counts"][fname] = len(text.split())
 
-    return file_cards, "".join(extracted_texts)
+    return stats, {fname: text for fname, text in tab_texts}
 
-# ---------------------------
-# Gradio UI
-# ---------------------------
+# --- Gradio Interface ---
 with gr.Blocks() as demo:
-    gr.Markdown("## Document Reader & Search Tool")
+    gr.Markdown("## Document Reader & Dashboard")
     gr.Markdown(
-        "Upload PDF, DOCX, or ZIP files. ZIPs will be extracted automatically. "
-        "Search across all files with term highlighting. Professional, clean interface."
+        "Upload PDF, DOCX, or ZIP files. You can upload multiple files at once. "
+        "Use the search box to highlight keywords in each document."
     )
 
-    with gr.Row():
-        file_input = gr.File(
-            label="Upload Documents",
-            file_types=[".pdf", ".docx", ".zip"],
-            type="filepath",
-            file_types_allow_multiple=True
-        )
-        search_input = gr.Textbox(
-            label="Search Term (optional)",
-            placeholder="Enter a term to search across all files..."
-        )
-
-    output_cards = gr.Textbox(
-        label="File Upload Status",
-        lines=8,
-        interactive=False
+    file_input = gr.File(
+        label="Upload Documents",
+        file_types=[".pdf", ".docx", ".zip"],
+        file_types_allow_multiple=True,
+        type="filepath"
     )
 
-    output_text = gr.Markdown(
-        label="Extracted Text & Search Results",
-        interactive=False
+    search_input = gr.Textbox(
+        label="Search Term (Optional)",
+        placeholder="Enter a word or phrase to highlight..."
     )
+
+    dashboard = gr.Markdown(label="Dashboard")
+    output_tabs = gr.TabbedInterface([], label="Documents")
 
     submit_btn = gr.Button("Process Files")
     submit_btn.click(
-        process_files,
+        fn=process_files,
         inputs=[file_input, search_input],
-        outputs=[output_cards, output_text]
+        outputs=[dashboard, output_tabs]
     )
 
 demo.launch()
