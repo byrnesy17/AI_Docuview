@@ -31,11 +31,16 @@ def read_zip(file_path):
         for name in zip_ref.namelist():
             if name.endswith(".pdf"):
                 with zip_ref.open(name) as f:
-                    text.append(read_pdf(f))
+                    temp_path = f"/tmp/{os.path.basename(name)}"
+                    with open(temp_path, "wb") as tmp:
+                        tmp.write(f.read())
+                    text.append(read_pdf(temp_path))
             elif name.endswith(".docx"):
                 with zip_ref.open(name) as f:
-                    f_path = f.name if hasattr(f, 'name') else f
-                    text.append(read_docx(f_path))
+                    temp_path = f"/tmp/{os.path.basename(name)}"
+                    with open(temp_path, "wb") as tmp:
+                        tmp.write(f.read())
+                    text.append(read_docx(temp_path))
             else:
                 text.append(f"Unsupported file inside ZIP: {name}")
     return "\n\n---\n\n".join(text)
@@ -72,7 +77,7 @@ with gr.Blocks() as demo:
     gr.Markdown("## 📄 Document Reader & Search Tool")
     gr.Markdown(
         """
-        Upload PDF, DOCX, or ZIP files (containing PDFs/DOCXs). 
+        Upload PDF, DOCX, or ZIP files (containing PDFs/DOCXs).  
         Extract text or search for specific keywords in your documents.
         """
     )
@@ -82,7 +87,7 @@ with gr.Blocks() as demo:
             label="Upload Documents",
             file_types=[".pdf", ".docx", ".zip"],
             type="filepath",
-            file_types_allow_multiple=True  # Multiple files
+            file_types="multiple"   # ✅ Gradio 5.x syntax
         )
         output_text = gr.Textbox(label="Extracted Text", lines=20)
         submit_btn = gr.Button("Process Files")
@@ -93,7 +98,7 @@ with gr.Blocks() as demo:
             label="Upload Documents",
             file_types=[".pdf", ".docx", ".zip"],
             type="filepath",
-            file_types_allow_multiple=True
+            file_types="multiple"   # ✅ Gradio 5.x syntax
         )
         search_query = gr.Textbox(label="Search Query")
         search_output = gr.Textbox(label="Search Results", lines=20)
