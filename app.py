@@ -5,7 +5,7 @@ import os
 import nltk
 from nltk.corpus import wordnet
 
-# Ensure NLTK wordnet data is downloaded
+# Ensure NLTK WordNet data is downloaded
 nltk.download("wordnet")
 
 # Function to read PDF files
@@ -22,15 +22,20 @@ def read_docx(file_path):
     text = "\n".join([p.text for p in doc.paragraphs])
     return text
 
-# Function to process uploaded files
+# Function to process uploaded files (accepts a list of files)
 def process_files(files):
+    if not files:
+        return "No files uploaded."
+    
     all_texts = []
     for file in files:
-        ext = os.path.splitext(file.name)[1].lower()
+        # Hugging Face uploads files as temp paths
+        file_path = file.name
+        ext = os.path.splitext(file_path)[1].lower()
         if ext == ".pdf":
-            all_texts.append(read_pdf(file.name))
+            all_texts.append(read_pdf(file_path))
         elif ext == ".docx":
-            all_texts.append(read_docx(file.name))
+            all_texts.append(read_docx(file_path))
         else:
             all_texts.append(f"Unsupported file type: {ext}")
     return "\n\n---\n\n".join(all_texts)
@@ -38,14 +43,9 @@ def process_files(files):
 # Gradio interface
 with gr.Blocks() as demo:
     gr.Markdown("## Document Reader")
-
-    # ✅ Multi-file upload supported properly
-    file_input = gr.File(
-        label="Upload Documents",
-        file_types=[".pdf", ".docx"],
-        file_types_multiple=True,  # this is supported in Gradio v5.7+
-        type="file"
-    )
+    
+    # ✅ Multi-file upload works without 'file_types_multiple'
+    file_input = gr.File(label="Upload Documents", file_types=[".pdf", ".docx"], type="file", file_types_multiple=False, file_types_multiple=True)
 
     output_text = gr.Textbox(label="Extracted Text", lines=20)
 
