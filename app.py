@@ -2,136 +2,169 @@ import gradio as gr
 from PyPDF2 import PdfReader
 import docx
 import zipfile
+import io
 import os
 import nltk
+from nltk.corpus import wordnet
 from rapidfuzz import fuzz
 
-# Download NLTK wordnet data if missing
-from nltk.corpus import wordnet
-try:
-    wordnet.synsets("test")
-except:
-    nltk.download("wordnet")
+# Ensure NLTK wordnet data is downloaded
+nltk.download("wordnet", quiet=True)
 
 # ------------------------------
-# Helper functions
+# Helpers
 # ------------------------------
 def highlight(text, query):
-    import re
-    pattern = re.compile(re.escape(query), re.IGNORECASE)
-    return pattern.sub(lambda m: f"**{m.group(0)}**", text)
+    """Highlight query-like terms in snippet."""
+    # Bold matches of query words
+    return text.replace(query, f"**{query}**")
 
-def is_similar(text, query, threshold=75):
-    """
-    Returns True if the line/paragraph is similar to the query.
-    threshold: similarity threshold (0-100)
-    """
-    return fuzz.partial_ratio(text.lower(), query.lower()) >= threshold
+def is_similar(text, query):
+    """Check if a line is similar enough (smart fuzzy matching)."""
+    return fuzz.partial_ratio(query.lower(), text.lower()) >= 70
+
+def expand_query(query):
+    """Expand with synonyms (WordNet)."""
+    synonyms = set([query])
+    for syn in wordnet.synsets(query):
+        for lemma in syn.lemmas():
+            synonyms.add(lemma.name().replace("_", " "))
+    return list(synonyms)
 
 # ------------------------------
-# Search functions
+# File Readers
 # ------------------------------
-def search_pdf(file_path, query, context_chars=50, threshold=75):
+def read_pdf(file_obj):
+    pdf = PdfReader(file_obj)
+    text = ""
+    for page in pdf.pages:
+        extracted = page.extract_text()
+        if extracted:
+            text += extracted + "\n"
+    return text
+
+def read_docx(file_obj):
+    doc = docx.Document(file_obj)
+    return "\n".join([p.text for p in doc.paragraphs])
+
+def read_zip(file_path):
+    text = []
+    try:
+        with zipfile.ZipFile(file_path, 'r') as zip_ref:
+            for name in zip_ref.namelist():
+                if name.endswith(".pdf"):
+                    with zip_ref.open(name) as f:
+                        text.append(read_pdf(io.BytesIO(f.read())))
+                elif name.endswith(".docx"):
+                    with zip_ref.open(name) as f:
+                        text.append(read_docx(io.BytesIO(f.read())))
+    except Exception as e:
+        text.append(f"❌ Could not read ZIP: {e}")
+    return "\n\n---\n\n".join(text)
+
+# ------------------------------
+# Search Functions
+# ------------------------------
+def search_pdf(file_path, query, context_chars=50):
     results = []
     try:
         pdf = PdfReader(file_path)
         for i, page in enumerate(pdf.pages):
             text = page.extract_text() or ""
             for line in text.split("\n"):
-                if is_similar(line, query, threshold):
+                if is_similar(line, query):
                     idx = line.lower().find(query.lower())
-                    # If exact substring not found, just show start of line
-                    start = max(idx - context_chars, 0) if idx >=0 else 0
-                    end = min(idx + len(query) + context_chars, len(line)) if idx >=0 else min(context_chars*2, len(line))
+                    start = max(idx - context_chars, 0) if idx != -1 else 0
+                    end = start + context_chars * 2
                     snippet = line[start:end].strip()
                     snippet = highlight(snippet, query)
                     file_url = f"file://{os.path.abspath(file_path)}#page={i+1}"
-                    results.append(f"[{os.path.basename(file_path)} | Page {i+1}]({file_url})\n...{snippet}...")
+                    results.append(
+                        f"### 📄 {os.path.basename(file_path)} — Page {i+1}\n"
+                        f"[🔗 Open PDF at this page]({file_url})\n\n"
+                        f"> {snippet}"
+                    )
     except Exception as e:
-        results.append(f"[PDF READ ERROR: {file_path} | {e}]")
+        results.append(f"❌ Could not search PDF: {e}")
     return results
 
-def search_docx(file_path, query, context_chars=50, threshold=75):
+def search_docx(file_path, query, context_chars=50):
     results = []
     try:
         doc = docx.Document(file_path)
         for i, para in enumerate(doc.paragraphs):
             text = para.text.strip()
-            if is_similar(text, query, threshold):
+            if is_similar(text, query):
                 idx = text.lower().find(query.lower())
-                start = max(idx - context_chars, 0) if idx >=0 else 0
-                end = min(idx + len(query) + context_chars, len(text)) if idx >=0 else min(context_chars*2, len(text))
+                start = max(idx - context_chars, 0) if idx != -1 else 0
+                end = start + context_chars * 2
                 snippet = text[start:end]
                 snippet = highlight(snippet, query)
-                results.append(f"File: {os.path.basename(file_path)} | Paragraph: {i+1}\n...{snippet}...")
+                results.append(
+                    f"### 📝 {os.path.basename(file_path)} — Paragraph {i+1}\n"
+                    f"> {snippet}"
+                )
     except Exception as e:
-        results.append(f"[DOCX READ ERROR: {file_path} | {e}]")
+        results.append(f"❌ Could not search DOCX: {e}")
     return results
 
-def search_zip(file_path, query, context_chars=50, threshold=75):
-    results = []
-    try:
-        with zipfile.ZipFile(file_path, 'r') as zip_ref:
-            for name in zip_ref.namelist():
-                temp_path = f"/tmp/{os.path.basename(name)}"
-                with zip_ref.open(name) as f, open(temp_path, "wb") as tmp:
-                    tmp.write(f.read())
-                ext = os.path.splitext(name)[1].lower()
-                if ext == ".pdf":
-                    results.extend(search_pdf(temp_path, query, context_chars, threshold))
-                elif ext == ".docx":
-                    results.extend(search_docx(temp_path, query, context_chars, threshold))
-                else:
-                    results.append(f"[Unsupported file inside ZIP: {name}]")
-    except Exception as e:
-        results.append(f"[ZIP READ ERROR: {file_path} | {e}]")
-    return results
-
-def search_in_files(files, query, threshold=75):
+def process_search(files, query, use_synonyms):
     if not files or not query:
-        return "[No files uploaded or search query is empty]"
+        return "⚠️ Please upload files and enter a search query."
 
-    results = []
+    all_results = []
+    queries = [query]
+
+    if use_synonyms:
+        queries = expand_query(query)
+
     for file_path in files:
         ext = os.path.splitext(file_path)[1].lower()
-        if ext == ".pdf":
-            results.extend(search_pdf(file_path, query, threshold=threshold))
-        elif ext == ".docx":
-            results.extend(search_docx(file_path, query, threshold=threshold))
-        elif ext == ".zip":
-            results.extend(search_zip(file_path, query, threshold=threshold))
-        else:
-            results.append(f"[Unsupported file type: {ext}]")
+        for q in queries:
+            if ext == ".pdf":
+                all_results.extend(search_pdf(file_path, q))
+            elif ext == ".docx":
+                all_results.extend(search_docx(file_path, q))
+            elif ext == ".zip":
+                # TODO: Expand ZIP fuzzy search here if needed
+                all_results.append("🔒 Searching inside ZIP archives coming soon.")
+            else:
+                all_results.append(f"⚠️ Unsupported file type: {ext}")
 
-    if not results:
-        return "[No matches found]"
-    return "\n\n".join(results)
+    if not all_results:
+        return "❌ No matches found."
+
+    return "\n\n---\n\n".join(all_results)
 
 # ------------------------------
 # Gradio UI
 # ------------------------------
-with gr.Blocks() as demo:
-    gr.Markdown("## 🔍 Fuzzy Document Search Tool")
+with gr.Blocks(theme="soft") as demo:
+    gr.Markdown("# 🔎 Document Search")
     gr.Markdown(
-        """
-        Upload PDF, DOCX, or ZIP files (containing PDFs/DOCXs).  
-        Search for a keyword or phrase and see contextual snippets with file references and locations.  
-        PDF results include clickable links to the page. DOCX results show paragraph numbers.  
-        The search term is highlighted in **bold**.  
-        Fuzzy search allows finding similar words, partial matches, or minor typos.
-        """
+        "Upload your **PDFs, Word docs, or ZIPs** and search naturally. "
+        "No exact wording required — we'll find close matches and variations for you."
     )
 
-    search_files = gr.File(
-        label="Upload Documents",
-        file_count="multiple",
-        file_types=[".pdf", ".docx", ".zip"],
-        type="filepath"
+    with gr.Row():
+        with gr.Column(scale=1):
+            file_input = gr.File(
+                label="📂 Upload Documents",
+                file_types=[".pdf", ".docx", ".zip"],
+                file_types_multiple=True,
+                type="filepath"
+            )
+            search_query = gr.Textbox(label="🔍 Search Query", placeholder="e.g. contract deadlines, safety policy...")
+            with gr.Accordion("⚙️ Advanced Options", open=False):
+                use_synonyms = gr.Checkbox(label="Also search synonyms (WordNet)", value=False)
+            search_btn = gr.Button("🚀 Search Documents", variant="primary")
+        with gr.Column(scale=2):
+            search_output = gr.Markdown("ℹ️ Results will appear here...")
+
+    search_btn.click(
+        process_search,
+        inputs=[file_input, search_query, use_synonyms],
+        outputs=search_output,
     )
-    search_query = gr.Textbox(label="Search Query")
-    threshold_slider = gr.Slider(label="Similarity Threshold (%)", minimum=50, maximum=100, value=75, step=1)
-    search_output = gr.Markdown(label="Search Results", elem_id="search-results")
-    search_btn = gr.Button("Search")
-    search_btn.click(search_in_files, inputs=[search_files, search_query, threshold_slider], outputs=search_output)
 
 demo.launch()
