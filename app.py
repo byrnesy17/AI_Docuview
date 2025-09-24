@@ -1,57 +1,52 @@
 import gradio as gr
-import os
-import pandas as pd
 from PyPDF2 import PdfReader
-from docx import Document
+import docx
+import os
 import nltk
+from nltk.corpus import wordnet
+import pandas as pd
 
-nltk.download('wordnet')
+# Ensure NLTK wordnet data is downloaded
+nltk.download("wordnet")
 
-# Function to extract text from PDFs
-def extract_text_pdf(file_path):
-    reader = PdfReader(file_path)
+# Function to read PDF files
+def read_pdf(file_path):
+    pdf = PdfReader(file_path)
     text = ""
-    for page in reader.pages:
+    for page in pdf.pages:
         text += page.extract_text() + "\n"
     return text
 
-# Function to extract text from DOCX
-def extract_text_docx(file_path):
-    doc = Document(file_path)
+# Function to read DOCX files
+def read_docx(file_path):
+    doc = docx.Document(file_path)
     text = "\n".join([p.text for p in doc.paragraphs])
     return text
 
-# Main search function
-def search_documents(files, keyword):
-    results = []
-    for file_obj in files:
-        file_name = os.path.basename(file_obj.name)
-        ext = os.path.splitext(file_name)[1].lower()
-        text = ""
+# Function to process uploaded files
+def process_files(files):
+    all_texts = []
+    for file in files:
+        ext = os.path.splitext(file.name)[1].lower()
         if ext == ".pdf":
-            text = extract_text_pdf(file_obj.name)
+            all_texts.append(read_pdf(file.name))
         elif ext == ".docx":
-            text = extract_text_docx(file_obj.name)
+            all_texts.append(read_docx(file.name))
         else:
-            continue
+            all_texts.append(f"Unsupported file type: {ext}")
+    return "\n\n---\n\n".join(all_texts)
 
-        # find sentences containing the keyword
-        sentences = [s for s in text.split("\n") if keyword.lower() in s.lower()]
-        for s in sentences:
-            results.append({"File": file_name, "Sentence": s})
-
-    df = pd.DataFrame(results)
-    return df
-
-# Gradio UI
+# Gradio interface
 with gr.Blocks() as demo:
-    gr.Markdown("## Document Search App\nUpload PDF or DOCX files and search for keywords.")
+    gr.Markdown("## Document Reader")
     
-    file_input = gr.File(label="Upload Documents", file_types=[".pdf", ".docx"], file_types_multiple=True)
-    keyword_input = gr.Textbox(label="Keyword")
-    search_btn = gr.Button("Search")
-    output_table = gr.Dataframe(headers=["File", "Sentence"], datatype=["str", "str"])
-    
-    search_btn.click(fn=search_documents, inputs=[file_input, keyword_input], outputs=output_table)
+    # For multiple file uploads, use 'file_types' and 'file_types_multiple=True' removed
+    file_input = gr.File(label="Upload Documents", file_types=[".pdf", ".docx", ".zip"], type="file", file_types_multiple=False, file_types_multiple=False, file_types_multiple=False)  
 
+    output_text = gr.Textbox(label="Extracted Text", lines=20)
+
+    submit_btn = gr.Button("Process Files")
+    submit_btn.click(process_files, inputs=file_input, outputs=output_text)
+
+# Launch app
 demo.launch()
