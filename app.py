@@ -6,7 +6,6 @@ import os
 import nltk
 from nltk.corpus import wordnet
 
-# Ensure NLTK wordnet data is downloaded
 nltk.download("wordnet")
 
 # ------------------------------
@@ -31,6 +30,7 @@ def read_zip(file_path):
         for name in zip_ref.namelist():
             if name.endswith(".pdf"):
                 with zip_ref.open(name) as f:
+                    # write to temp path
                     temp_path = f"/tmp/{os.path.basename(name)}"
                     with open(temp_path, "wb") as tmp:
                         tmp.write(f.read())
@@ -46,9 +46,10 @@ def read_zip(file_path):
     return "\n\n---\n\n".join(text)
 
 # ------------------------------
-# Processing & Searching Functions
+# Processing & Searching
 # ------------------------------
 def process_files(files):
+    # `files` will be a list of file paths (strings) when file_count="multiple"
     all_texts = []
     for file_path in files:
         ext = os.path.splitext(file_path)[1].lower()
@@ -85,9 +86,9 @@ with gr.Blocks() as demo:
     with gr.Tab("Extract Text"):
         file_input = gr.File(
             label="Upload Documents",
+            file_count="multiple",  # allows multiple file upload
             file_types=[".pdf", ".docx", ".zip"],
-            type="filepath",
-            file_types="multiple"   # ✅ Gradio 5.x syntax
+            type="filepath"
         )
         output_text = gr.Textbox(label="Extracted Text", lines=20)
         submit_btn = gr.Button("Process Files")
@@ -96,9 +97,9 @@ with gr.Blocks() as demo:
     with gr.Tab("Search Text"):
         search_files = gr.File(
             label="Upload Documents",
+            file_count="multiple",  # allows multiple file upload
             file_types=[".pdf", ".docx", ".zip"],
-            type="filepath",
-            file_types="multiple"   # ✅ Gradio 5.x syntax
+            type="filepath"
         )
         search_query = gr.Textbox(label="Search Query")
         search_output = gr.Textbox(label="Search Results", lines=20)
@@ -106,3 +107,4 @@ with gr.Blocks() as demo:
         search_btn.click(search_in_text, inputs=[search_files, search_query], outputs=search_output)
 
 demo.launch()
+
