@@ -1,24 +1,24 @@
 import gradio as gr
 from PyPDF2 import PdfReader
 import docx
-import os
 import zipfile
+import os
 import nltk
 from nltk.corpus import wordnet
 
-# Download NLTK wordnet
+# Ensure NLTK wordnet data is downloaded
 nltk.download("wordnet")
 
 # ------------------------------
-# File reading functions
+# File Reading Functions
 # ------------------------------
 def read_pdf(file_path):
     pdf = PdfReader(file_path)
     text = ""
     for page in pdf.pages:
-        page_text = page.extract_text()
-        if page_text:
-            text += page_text + "\n"
+        extracted = page.extract_text()
+        if extracted:
+            text += extracted + "\n"
     return text
 
 def read_docx(file_path):
@@ -26,41 +26,37 @@ def read_docx(file_path):
     return "\n".join([p.text for p in doc.paragraphs])
 
 def read_zip(file_path):
-    text = ""
-    with zipfile.ZipFile(file_path, "r") as zip_ref:
-        for file_info in zip_ref.infolist():
-            name = file_info.filename
-            ext = os.path.splitext(name)[1].lower()
-            if ext == ".pdf":
-                zip_ref.extract(file_info, "/tmp")
-                text += read_pdf(os.path.join("/tmp", name)) + "\n\n---\n\n"
-            elif ext == ".docx":
-                zip_ref.extract(file_info, "/tmp")
-                text += read_docx(os.path.join("/tmp", name)) + "\n\n---\n\n"
+    text = []
+    with zipfile.ZipFile(file_path, 'r') as zip_ref:
+        for name in zip_ref.namelist():
+            if name.endswith(".pdf"):
+                with zip_ref.open(name) as f:
+                    text.append(read_pdf(f))
+            elif name.endswith(".docx"):
+                with zip_ref.open(name) as f:
+                    f_path = f.name if hasattr(f, 'name') else f
+                    text.append(read_docx(f_path))
             else:
-                text += f"Unsupported file type in zip: {ext}\n\n---\n\n"
-    return text
+                text.append(f"Unsupported file inside ZIP: {name}")
+    return "\n\n---\n\n".join(text)
 
 # ------------------------------
-# Process uploaded files
+# Processing & Searching Functions
 # ------------------------------
 def process_files(files):
     all_texts = []
-    for file in files:
-        ext = os.path.splitext(file.name)[1].lower()
+    for file_path in files:
+        ext = os.path.splitext(file_path)[1].lower()
         if ext == ".pdf":
-            all_texts.append(read_pdf(file.name))
+            all_texts.append(read_pdf(file_path))
         elif ext == ".docx":
-            all_texts.append(read_docx(file.name))
+            all_texts.append(read_docx(file_path))
         elif ext == ".zip":
-            all_texts.append(read_zip(file.name))
+            all_texts.append(read_zip(file_path))
         else:
             all_texts.append(f"Unsupported file type: {ext}")
     return "\n\n---\n\n".join(all_texts)
 
-# ------------------------------
-# Search function
-# ------------------------------
 def search_in_text(files, query):
     full_text = process_files(files)
     lines = full_text.split("\n")
@@ -73,23 +69,35 @@ def search_in_text(files, query):
 # Gradio UI
 # ------------------------------
 with gr.Blocks() as demo:
-    gr.Markdown("## Document Reader & Search")
-    gr.Markdown("Upload PDF, DOCX, or ZIP files, then extract text or search for keywords.")
-
-    file_input = gr.File(
-        label="Upload Documents",
-        file_types=[".pdf", ".docx", ".zip"],
-        type="filepath"  # Correct argument
+    gr.Markdown("## 📄 Document Reader & Search Tool")
+    gr.Markdown(
+        """
+        Upload PDF, DOCX, or ZIP files (containing PDFs/DOCXs). 
+        Extract text or search for specific keywords in your documents.
+        """
     )
 
-    search_query = gr.Textbox(label="Search Query", placeholder="Enter text to search for...", lines=1)
-    extracted_text = gr.Textbox(label="Extracted Text", lines=20, interactive=False)
+    with gr.Tab("Extract Text"):
+        file_input = gr.File(
+            label="Upload Documents",
+            file_types=[".pdf", ".docx", ".zip"],
+            type="filepath",
+            file_types_allow_multiple=True  # Multiple files
+        )
+        output_text = gr.Textbox(label="Extracted Text", lines=20)
+        submit_btn = gr.Button("Process Files")
+        submit_btn.click(process_files, inputs=file_input, outputs=output_text)
 
-    with gr.Row():
-        process_btn = gr.Button("Extract Text")
-        search_btn = gr.Button("Search in Files")
-
-    process_btn.click(process_files, inputs=file_input, outputs=extracted_text)
-    search_btn.click(search_in_text, inputs=[file_input, search_query], outputs=extracted_text)
+    with gr.Tab("Search Text"):
+        search_files = gr.File(
+            label="Upload Documents",
+            file_types=[".pdf", ".docx", ".zip"],
+            type="filepath",
+            file_types_allow_multiple=True
+        )
+        search_query = gr.Textbox(label="Search Query")
+        search_output = gr.Textbox(label="Search Results", lines=20)
+        search_btn = gr.Button("Search")
+        search_btn.click(search_in_text, inputs=[search_files, search_query], outputs=search_output)
 
 demo.launch()
