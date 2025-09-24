@@ -21,15 +21,15 @@ def read_docx(file_path):
     text = "\n".join([p.text for p in doc.paragraphs])
     return text
 
-# Function to process uploaded files (accepts a list of files)
+# Function to process uploaded files
 def process_files(files):
     all_texts = []
     for file in files:
-        ext = os.path.splitext(file.name)[1].lower()
+        ext = os.path.splitext(file)[1].lower()
         if ext == ".pdf":
-            all_texts.append(read_pdf(file.name))
+            all_texts.append(read_pdf(file))
         elif ext == ".docx":
-            all_texts.append(read_docx(file.name))
+            all_texts.append(read_docx(file))
         else:
             all_texts.append(f"Unsupported file type: {ext}")
     return "\n\n---\n\n".join(all_texts)
@@ -38,11 +38,11 @@ def process_files(files):
 with gr.Blocks() as demo:
     gr.Markdown("## Document Reader")
 
-    # Corrected: remove 'file_types_multiple'
+    # Corrected type
     file_input = gr.File(
         label="Upload Documents",
         file_types=[".pdf", ".docx"],
-        type="file"  # type="file" ensures the file object is passed
+        type="filepath"  # must be "filepath" or "binary"
     )
 
     output_text = gr.Textbox(label="Extracted Text", lines=20)
