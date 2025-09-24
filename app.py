@@ -1,69 +1,57 @@
 import gradio as gr
-from sentence_transformers import SentenceTransformer, util
+import os
+import pandas as pd
 from PyPDF2 import PdfReader
 from docx import Document
-from io import BytesIO
-import re
-import pandas as pd
+import nltk
 
-# Load small model from Hugging Face hub (fast & lightweight)
-model = SentenceTransformer('all-MiniLM-L6-v2')
+nltk.download('wordnet')
 
-# Extract text from PDF in-memory
-def extract_pdf_text(file_bytes):
-    pdf = PdfReader(BytesIO(file_bytes))
-    texts = []
-    for page in pdf.pages:
-        texts.append(page.extract_text())
-    return "\n".join(texts)
+# Function to extract text from PDFs
+def extract_text_pdf(file_path):
+    reader = PdfReader(file_path)
+    text = ""
+    for page in reader.pages:
+        text += page.extract_text() + "\n"
+    return text
 
-# Extract text from DOCX in-memory
-def extract_docx_text(file_bytes):
-    doc = Document(BytesIO(file_bytes))
-    return "\n".join([p.text for p in doc.paragraphs])
+# Function to extract text from DOCX
+def extract_text_docx(file_path):
+    doc = Document(file_path)
+    text = "\n".join([p.text for p in doc.paragraphs])
+    return text
 
-# Search text in all uploaded files
-def search_documents(files, query):
+# Main search function
+def search_documents(files, keyword):
     results = []
-    for uploaded_file in files:
-        name = uploaded_file.name
-        content = None
-        if name.lower().endswith(".pdf"):
-            content = extract_pdf_text(uploaded_file.read())
-        elif name.lower().endswith(".docx"):
-            content = extract_docx_text(uploaded_file.read())
+    for file_obj in files:
+        file_name = os.path.basename(file_obj.name)
+        ext = os.path.splitext(file_name)[1].lower()
+        text = ""
+        if ext == ".pdf":
+            text = extract_text_pdf(file_obj.name)
+        elif ext == ".docx":
+            text = extract_text_docx(file_obj.name)
         else:
             continue
 
-        # Split into sentences
-        sentences = re.split(r'(?<=[.!?]) +', content)
-        for sentence in sentences:
-            if query.lower() in sentence.lower():
-                # Highlight the match
-                highlighted = re.sub(f"({re.escape(query)})", r"<mark>\1</mark>", sentence, flags=re.IGNORECASE)
-                results.append({
-                    "file": name,
-                    "sentence": highlighted
-                })
+        # find sentences containing the keyword
+        sentences = [s for s in text.split("\n") if keyword.lower() in s.lower()]
+        for s in sentences:
+            results.append({"File": file_name, "Sentence": s})
 
     df = pd.DataFrame(results)
-    return df.to_dict(orient="records")
+    return df
 
 # Gradio UI
 with gr.Blocks() as demo:
-    gr.Markdown("## Document Search Tool")
+    gr.Markdown("## Document Search App\nUpload PDF or DOCX files and search for keywords.")
     
-    with gr.Row():
-        file_input = gr.File(label="Upload Documents", file_types=[".pdf", ".docx"], file_types_multiple=True)
-        search_input = gr.Textbox(label="Search Query", placeholder="Enter word or phrase...")
-        search_button = gr.Button("Search")
+    file_input = gr.File(label="Upload Documents", file_types=[".pdf", ".docx"], file_types_multiple=True)
+    keyword_input = gr.Textbox(label="Keyword")
+    search_btn = gr.Button("Search")
+    output_table = gr.Dataframe(headers=["File", "Sentence"], datatype=["str", "str"])
     
-    result_table = gr.Dataframe(headers=["File", "Sentence"], interactive=False)
-
-    search_button.click(
-        search_documents,
-        inputs=[file_input, search_input],
-        outputs=result_table
-    )
+    search_btn.click(fn=search_documents, inputs=[file_input, keyword_input], outputs=output_table)
 
 demo.launch()
