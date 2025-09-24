@@ -9,11 +9,11 @@ import uuid
 # -------------------------
 # Helper functions
 # -------------------------
-def extract_and_read(file_obj):
+def extract_and_read(file_path):
     text = ""
-    if file_obj.name.endswith(".zip"):
+    if file_path.endswith(".zip"):
         with tempfile.TemporaryDirectory() as tmpdir:
-            with zipfile.ZipFile(file_obj.name, "r") as zip_ref:
+            with zipfile.ZipFile(file_path, "r") as zip_ref:
                 zip_ref.extractall(tmpdir)
                 for root, _, files in os.walk(tmpdir):
                     for f in files:
@@ -21,7 +21,7 @@ def extract_and_read(file_obj):
                             with open(os.path.join(root, f), "r", encoding="utf-8", errors="ignore") as infile:
                                 text += infile.read() + "\n"
     else:
-        with open(file_obj.name, "r", encoding="utf-8", errors="ignore") as infile:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as infile:
             text = infile.read()
     return text
 
@@ -35,14 +35,14 @@ def search_documents(files, query):
         return "<p>Please upload files and enter a search term.</p>"
     
     results_html = []
-    for file in files:
-        content = extract_and_read(file)
+    for file_path in files:
+        content = extract_and_read(file_path)
         lines = content.splitlines()
         for idx, line in enumerate(lines, start=1):
             if query.lower() in line.lower():
                 ratio = difflib.SequenceMatcher(None, query.lower(), line.lower()).ratio()
                 snippet = highlight_text(line.strip(), query)
-                file_display = os.path.basename(file.name)
+                file_display = os.path.basename(file_path)
 
                 # Get surrounding context (5 lines before & after)
                 start = max(0, idx-5)
@@ -90,9 +90,9 @@ def extract_text_panel(files):
         return "<p>Please upload files to extract text.</p>"
     
     sections = []
-    for file in files:
-        content = extract_and_read(file)
-        file_display = os.path.basename(file.name)
+    for file_path in files:
+        content = extract_and_read(file_path)
+        file_display = os.path.basename(file_path)
         sections.append(f"""
         <div class="extract-card">
             <div class="extract-header">{file_display}</div>
@@ -297,7 +297,7 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Soft()) as demo:
         with gr.Row():
             file_input = gr.File(
                 file_types=[".txt", ".md", ".zip"],
-                type="file",
+                type="filepath",        # ✅ fixed for Gradio 5.x
                 label="Upload Documents",
                 file_count="multiple"
             )
@@ -314,7 +314,7 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Soft()) as demo:
         gr.Markdown("### Extract Text")
         file_input_extract = gr.File(
             file_types=[".txt", ".md", ".zip"],
-            type="file",
+            type="filepath",        # ✅ fixed for Gradio 5.x
             label="Upload Documents",
             file_count="multiple"
         )
