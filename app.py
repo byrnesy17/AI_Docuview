@@ -3,9 +3,8 @@ from PyPDF2 import PdfReader
 import docx
 import os
 import nltk
-from nltk.corpus import wordnet
 
-# Download NLTK wordnet data
+# Ensure NLTK wordnet data is downloaded
 nltk.download("wordnet")
 
 # Function to read PDF files
@@ -22,7 +21,7 @@ def read_docx(file_path):
     text = "\n".join([p.text for p in doc.paragraphs])
     return text
 
-# Function to process uploaded files
+# Function to process uploaded files (accepts a list of files)
 def process_files(files):
     all_texts = []
     for file in files:
@@ -39,12 +38,11 @@ def process_files(files):
 with gr.Blocks() as demo:
     gr.Markdown("## Document Reader")
 
-    # Allow multiple file uploads
+    # Corrected: remove 'file_types_multiple'
     file_input = gr.File(
         label="Upload Documents",
         file_types=[".pdf", ".docx"],
-        type="file",
-        file_types_multiple=True  # Correct property for multiple files
+        type="file"  # type="file" ensures the file object is passed
     )
 
     output_text = gr.Textbox(label="Extracted Text", lines=20)
