@@ -4,7 +4,6 @@ import docx
 import os
 import nltk
 from nltk.corpus import wordnet
-import pandas as pd
 
 # Ensure NLTK wordnet data is downloaded
 nltk.download("wordnet")
@@ -23,7 +22,7 @@ def read_docx(file_path):
     text = "\n".join([p.text for p in doc.paragraphs])
     return text
 
-# Function to process uploaded files
+# Function to process uploaded files (accepts a list of files)
 def process_files(files):
     all_texts = []
     for file in files:
@@ -39,14 +38,13 @@ def process_files(files):
 # Gradio interface
 with gr.Blocks() as demo:
     gr.Markdown("## Document Reader")
-    
-    # For multiple file uploads, use 'file_types' and 'file_types_multiple=True' removed
-    file_input = gr.File(label="Upload Documents", file_types=[".pdf", ".docx", ".zip"], type="file", file_types_multiple=False, file_types_multiple=False, file_types_multiple=False)  
+
+    # Multiple files supported automatically with 'type="file"' and 'file_types'
+    file_input = gr.File(label="Upload Documents", file_types=[".pdf", ".docx"], type="file", file_types=None)
 
     output_text = gr.Textbox(label="Extracted Text", lines=20)
 
     submit_btn = gr.Button("Process Files")
     submit_btn.click(process_files, inputs=file_input, outputs=output_text)
 
-# Launch app
 demo.launch()
