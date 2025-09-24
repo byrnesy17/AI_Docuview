@@ -297,7 +297,6 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Soft()) as demo:
         with gr.Row():
             file_input = gr.File(
                 file_types=[".txt", ".md", ".zip"],
-                file_types_display="extension",
                 type="file",
                 label="Upload Documents",
                 file_count="multiple"
@@ -315,7 +314,6 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Soft()) as demo:
         gr.Markdown("### Extract Text")
         file_input_extract = gr.File(
             file_types=[".txt", ".md", ".zip"],
-            file_types_display="extension",
             type="file",
             label="Upload Documents",
             file_count="multiple"
