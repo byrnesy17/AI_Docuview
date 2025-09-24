@@ -6,13 +6,12 @@ import zipfile
 import nltk
 from nltk.corpus import wordnet
 
-# Ensure NLTK wordnet data is downloaded
+# Download NLTK wordnet
 nltk.download("wordnet")
 
 # ------------------------------
 # File reading functions
 # ------------------------------
-
 def read_pdf(file_path):
     pdf = PdfReader(file_path)
     text = ""
@@ -45,7 +44,6 @@ def read_zip(file_path):
 # ------------------------------
 # Process uploaded files
 # ------------------------------
-
 def process_files(files):
     all_texts = []
     for file in files:
@@ -61,9 +59,8 @@ def process_files(files):
     return "\n\n---\n\n".join(all_texts)
 
 # ------------------------------
-# Search functionality
+# Search function
 # ------------------------------
-
 def search_in_text(files, query):
     full_text = process_files(files)
     lines = full_text.split("\n")
@@ -75,16 +72,14 @@ def search_in_text(files, query):
 # ------------------------------
 # Gradio UI
 # ------------------------------
-
 with gr.Blocks() as demo:
-    gr.Markdown("## 📄 Document Reader & Search")
-    gr.Markdown("Upload PDF, DOCX, or ZIP files containing documents, then extract text or search for keywords.")
+    gr.Markdown("## Document Reader & Search")
+    gr.Markdown("Upload PDF, DOCX, or ZIP files, then extract text or search for keywords.")
 
     file_input = gr.File(
         label="Upload Documents",
         file_types=[".pdf", ".docx", ".zip"],
-        type="filepath",
-        file_types_multiple=False  # Gradio v5+ uses file_types_multiple=False; multiple uploads automatically allowed via list
+        type="filepath"  # Correct argument
     )
 
     search_query = gr.Textbox(label="Search Query", placeholder="Enter text to search for...", lines=1)
@@ -98,4 +93,3 @@ with gr.Blocks() as demo:
     search_btn.click(search_in_text, inputs=[file_input, search_query], outputs=extracted_text)
 
 demo.launch()
-
