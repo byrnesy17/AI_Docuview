@@ -39,8 +39,8 @@ def process_files(files):
 with gr.Blocks() as demo:
     gr.Markdown("## Document Reader")
 
-    # Multiple files supported automatically with 'type="file"' and 'file_types'
-    file_input = gr.File(label="Upload Documents", file_types=[".pdf", ".docx"], type="file", file_types=None)
+    # ✅ No duplicate arguments, allow multiple file uploads
+    file_input = gr.File(label="Upload Documents", file_types=[".pdf", ".docx"], type="file", file_types_multiple=True)
 
     output_text = gr.Textbox(label="Extracted Text", lines=20)
 
