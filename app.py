@@ -82,7 +82,7 @@ def expand_query(query):
     return expanded
 
 # -------------------------------
-# Search Function
+# Highlight matches
 # -------------------------------
 def highlight_text(text, keywords):
     """Highlight all occurrences of keywords in text."""
@@ -91,6 +91,9 @@ def highlight_text(text, keywords):
         text = regex.sub(r"**🟨\1🟨**", text)
     return text
 
+# -------------------------------
+# Search Function
+# -------------------------------
 def search_documents(files, query):
     if not files or not query.strip():
         return "⚠️ Please upload documents and enter a search query."
@@ -98,7 +101,7 @@ def search_documents(files, query):
     documents = load_documents(files)
     results = []
 
-    # Expand query
+    # Expand query with synonyms
     keywords = expand_query(query)
 
     for fname, text in documents.items():
@@ -136,7 +139,7 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
             label="Upload Documents",
             type="filepath",
             file_types=[".pdf", ".docx", ".zip"],
-            file_types="multiple"    # allow multiple uploads
+            file_types_multiple=True   # ✅ correct for multiple files
         )
 
     with gr.Row():
