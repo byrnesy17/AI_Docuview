@@ -22,7 +22,7 @@ def read_docx(file_path):
     text = "\n".join([p.text for p in doc.paragraphs])
     return text
 
-# Function to process uploaded files (accepts a list of files)
+# Function to process uploaded files
 def process_files(files):
     all_texts = []
     for file in files:
@@ -39,8 +39,13 @@ def process_files(files):
 with gr.Blocks() as demo:
     gr.Markdown("## Document Reader")
 
-    # ✅ No duplicate arguments, allow multiple file uploads
-    file_input = gr.File(label="Upload Documents", file_types=[".pdf", ".docx"], type="file", file_types_multiple=True)
+    # ✅ Multi-file upload supported properly
+    file_input = gr.File(
+        label="Upload Documents",
+        file_types=[".pdf", ".docx"],
+        file_types_multiple=True,  # this is supported in Gradio v5.7+
+        type="file"
+    )
 
     output_text = gr.Textbox(label="Extracted Text", lines=20)
 
