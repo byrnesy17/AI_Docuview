@@ -7,14 +7,12 @@ import pytesseract
 from sentence_transformers import SentenceTransformer
 import numpy as np
 import gradio as gr
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 
 # -------------------------------
 # Setup
 # -------------------------------
 MODEL = SentenceTransformer('all-MiniLM-L6-v2')
-CACHE_DIR = "page_images"
-os.makedirs(CACHE_DIR, exist_ok=True)
 
 # -------------------------------
 # Document Processing
@@ -77,7 +75,6 @@ def search_docs(files, query):
         sentences = re.split(r'(?<=[.!?])\s+', text)
         sent_vecs = MODEL.encode(sentences)
         sims = np.dot(sent_vecs, query_vec) / (np.linalg.norm(sent_vecs, axis=1) * np.linalg.norm(query_vec) + 1e-10)
-        # get sentences with similarity > 0.5
         for i, score in enumerate(sims):
             if score > 0.5:
                 highlighted = highlight_sentence(sentences[i], query)
@@ -90,20 +87,22 @@ def search_docs(files, query):
 # -------------------------------
 # Gradio UI
 # -------------------------------
-with gr.Blocks(theme=gr.themes.Soft()) as demo:
+with gr.Blocks() as demo:
     gr.Markdown(
         """
-        # Meeting Minutes Search
-        Upload PDFs, Word (.docx), or TXT files and search for sentences.
+        # 📑 Meeting Minutes Search
+        Upload PDFs, Word (.docx), or TXT files and search for sentences.  
         Matches are highlighted for easy review.
         """
     )
 
-    with gr.Row():
-        file_input = gr.File(label="Upload Documents", file_types=[".pdf",".docx",".txt"], file_count="multiple", type="filepath")
-    with gr.Row():
-        query_input = gr.Textbox(label="Search Query", placeholder="Enter word or phrase...")
-
+    file_input = gr.File(
+        label="Upload Documents",
+        file_types=[".pdf", ".docx", ".txt"],
+        file_count="multiple",
+        type="filepath"
+    )
+    query_input = gr.Textbox(label="Search Query", placeholder="Enter word or phrase...")
     search_button = gr.Button("Search")
     output = gr.Markdown()
 
