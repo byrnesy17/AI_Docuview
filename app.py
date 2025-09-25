@@ -1,326 +1,157 @@
 import gradio as gr
 import os
 import zipfile
-import tempfile
-import difflib
+import docx
+from PyPDF2 import PdfReader
+import nltk
+from nltk.corpus import wordnet
 import re
-import uuid
 
-# -------------------------
-# Helper functions
-# -------------------------
-def extract_and_read(file_path):
+# Ensure NLTK data is available
+nltk.download("punkt", quiet=True)
+nltk.download("wordnet", quiet=True)
+
+# -------------------------------
+# Document Processing
+# -------------------------------
+def extract_text_from_pdf(file_path):
     text = ""
-    if file_path.endswith(".zip"):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with zipfile.ZipFile(file_path, "r") as zip_ref:
-                zip_ref.extractall(tmpdir)
-                for root, _, files in os.walk(tmpdir):
-                    for f in files:
-                        if f.endswith((".txt", ".md")):
-                            with open(os.path.join(root, f), "r", encoding="utf-8", errors="ignore") as infile:
-                                text += infile.read() + "\n"
-    else:
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as infile:
-            text = infile.read()
+    try:
+        reader = PdfReader(file_path)
+        for page in reader.pages:
+            text += page.extract_text() or ""
+    except Exception as e:
+        text += f"\n[PDF READ ERROR: {file_path} | {e}]"
     return text
 
-def highlight_text(text, query):
-    """Highlight query words inside text like Google results."""
-    pattern = re.compile(re.escape(query), re.IGNORECASE)
-    return pattern.sub(lambda m: f"<mark>{m.group(0)}</mark>", text)
+def extract_text_from_docx(file_path):
+    text = ""
+    try:
+        doc = docx.Document(file_path)
+        for para in doc.paragraphs:
+            text += para.text + "\n"
+    except Exception as e:
+        text += f"\n[DOCX READ ERROR: {file_path} | {e}]"
+    return text
 
+def extract_text_from_zip(file_path):
+    text = ""
+    try:
+        with zipfile.ZipFile(file_path, "r") as z:
+            for name in z.namelist():
+                if name.endswith(".pdf"):
+                    with z.open(name) as f:
+                        tmp_path = f"/tmp/{os.path.basename(name)}"
+                        with open(tmp_path, "wb") as tmpf:
+                            tmpf.write(f.read())
+                        text += f"\n--- {name} ---\n"
+                        text += extract_text_from_pdf(tmp_path)
+                elif name.endswith(".docx"):
+                    with z.open(name) as f:
+                        tmp_path = f"/tmp/{os.path.basename(name)}"
+                        with open(tmp_path, "wb") as tmpf:
+                            tmpf.write(f.read())
+                        text += f"\n--- {name} ---\n"
+                        text += extract_text_from_docx(tmp_path)
+    except Exception as e:
+        text += f"\n[ZIP READ ERROR: {file_path} | {e}]"
+    return text
+
+def load_documents(files):
+    all_texts = {}
+    for file_path in files:
+        if file_path.endswith(".pdf"):
+            all_texts[file_path] = extract_text_from_pdf(file_path)
+        elif file_path.endswith(".docx"):
+            all_texts[file_path] = extract_text_from_docx(file_path)
+        elif file_path.endswith(".zip"):
+            all_texts[file_path] = extract_text_from_zip(file_path)
+        else:
+            all_texts[file_path] = f"[Unsupported file type: {file_path}]"
+    return all_texts
+
+# -------------------------------
+# Smart Query Expansion
+# -------------------------------
+def expand_query(query):
+    """Expand search query to include synonyms and related words."""
+    expanded = {query.lower()}
+    for syn in wordnet.synsets(query):
+        for lemma in syn.lemmas():
+            expanded.add(lemma.name().lower().replace("_", " "))
+    return expanded
+
+# -------------------------------
+# Highlight matches
+# -------------------------------
+def highlight_text(text, keywords):
+    """Highlight all occurrences of keywords in text."""
+    for kw in sorted(keywords, key=len, reverse=True):
+        regex = re.compile(rf"\b({re.escape(kw)})\b", re.IGNORECASE)
+        text = regex.sub(r"**🟨\1🟨**", text)
+    return text
+
+# -------------------------------
+# Search Function
+# -------------------------------
 def search_documents(files, query):
     if not files or not query.strip():
-        return "<p>Please upload files and enter a search term.</p>"
-    
-    results_html = []
-    for file_path in files:
-        content = extract_and_read(file_path)
-        lines = content.splitlines()
-        for idx, line in enumerate(lines, start=1):
-            if query.lower() in line.lower():
-                ratio = difflib.SequenceMatcher(None, query.lower(), line.lower()).ratio()
-                snippet = highlight_text(line.strip(), query)
-                file_display = os.path.basename(file_path)
+        return "⚠️ Please upload documents and enter a search query."
 
-                # Get surrounding context (5 lines before & after)
-                start = max(0, idx-5)
-                end = min(len(lines), idx+5)
-                context = "\n".join(lines[start:end])
-                context = highlight_text(context, query)
+    documents = load_documents(files)
+    results = []
 
-                unique_id = uuid.uuid4().hex[:8]
+    # Expand query with synonyms
+    keywords = expand_query(query)
 
-                card_html = f"""
-                <div class="result-card">
-                    <div class="result-header">
-                        {file_display} <span class="meta">Line {idx} • Match {int(ratio*100)}%</span>
-                    </div>
-                    <div class="result-snippet">
-                        {snippet}
-                    </div>
-                    <button class="expand-btn" onclick="toggleContext('{unique_id}')">View More Context</button>
-                    <div id="context-{unique_id}" class="context hidden">
-                        <pre>{context}</pre>
-                    </div>
-                </div>
-                """
-                results_html.append(card_html)
-    
-    if not results_html:
-        return "<p>No matches found.</p>"
-    
-    return """
-    <script>
-    function toggleContext(id) {
-        var el = document.getElementById("context-" + id);
-        if (el.classList.contains("hidden")) {
-            el.classList.remove("hidden");
-        } else {
-            el.classList.add("hidden");
-        }
-    }
-    </script>
-    <div class='results-container'>""" + "".join(results_html) + "</div>"
+    for fname, text in documents.items():
+        if not text.strip():
+            continue
 
-def extract_text_panel(files):
-    """Extract all text from uploaded files and return it nicely formatted."""
-    if not files:
-        return "<p>Please upload files to extract text.</p>"
-    
-    sections = []
-    for file_path in files:
-        content = extract_and_read(file_path)
-        file_display = os.path.basename(file_path)
-        sections.append(f"""
-        <div class="extract-card">
-            <div class="extract-header">{file_display}</div>
-            <pre class="extract-body">{content}</pre>
-        </div>
-        """)
-    
-    return "<div class='extract-container'>" + "".join(sections) + "</div>"
+        lines = text.split("\n")
+        for i, line in enumerate(lines):
+            if any(kw in line.lower() for kw in keywords):
+                snapshot = "\n".join(lines[max(0, i-1): min(len(lines), i+2)])
+                highlighted = highlight_text(snapshot, keywords)
+                results.append(
+                    f"📄 **{os.path.basename(fname)}** — line {i+1}\n\n{highlighted}"
+                )
 
-# -------------------------
-# Custom CSS
-# -------------------------
-custom_css = """
-body, .gradio-container {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-}
+    if not results:
+        return f"❌ No matches (or close matches) found for: **{query}**"
+    return "\n\n---\n\n".join(results)
 
-/* Layout */
-.app-container {
-    display: flex;
-    height: 100vh;
-}
+# -------------------------------
+# Gradio UI
+# -------------------------------
+with gr.Blocks(theme=gr.themes.Soft()) as demo:
+    gr.Markdown(
+        """
+        # 📂 Smart Document Search  
+        Upload PDFs, Word files, or ZIPs — then search across them.  
+        Results show **context snapshots** where your word *or related words* appear,  
+        with matches highlighted 🟨.
+        """
+    )
 
-.sidebar {
-    width: 240px;
-    background: #1d1d1f;
-    color: #f5f5f7;
-    padding: 20px;
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-}
-
-.sidebar h2 {
-    font-size: 1.2em;
-    font-weight: 700;
-    margin-bottom: 20px;
-}
-
-.sidebar button {
-    background: transparent;
-    color: inherit;
-    border: none;
-    text-align: left;
-    padding: 10px;
-    font-size: 1em;
-    cursor: pointer;
-    border-radius: 8px;
-    transition: background 0.2s ease;
-}
-
-.sidebar button:hover, .sidebar button.active {
-    background: #2c2c2e;
-}
-
-.main-content {
-    flex: 1;
-    background: #f9f9f9;
-    padding: 30px;
-    overflow-y: auto;
-}
-
-/* Results styling */
-.results-container {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    margin-top: 20px;
-}
-
-.result-card {
-    background: #fff;
-    border-radius: 12px;
-    padding: 16px;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
-    transition: all 0.2s ease;
-}
-
-.result-card:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 6px 16px rgba(0,0,0,0.12);
-}
-
-.result-header {
-    font-weight: 600;
-    margin-bottom: 8px;
-    color: #1d1d1f;
-}
-
-.result-header .meta {
-    font-size: 0.85em;
-    color: gray;
-    margin-left: 8px;
-}
-
-.result-snippet {
-    font-size: 0.95em;
-    line-height: 1.4;
-    color: #333;
-}
-
-mark {
-    background: #ffeb3b;
-    color: black;
-    font-weight: 600;
-    border-radius: 3px;
-    padding: 0 2px;
-}
-
-.expand-btn {
-    margin-top: 8px;
-    background: #007aff;
-    color: white;
-    border: none;
-    border-radius: 8px;
-    padding: 6px 12px;
-    font-size: 0.85em;
-    cursor: pointer;
-    transition: background 0.2s ease;
-}
-
-.expand-btn:hover {
-    background: #005bb5;
-}
-
-.context {
-    margin-top: 12px;
-    background: #f5f5f7;
-    padding: 10px;
-    border-radius: 8px;
-    font-size: 0.9em;
-    white-space: pre-wrap;
-}
-
-.hidden {
-    display: none;
-}
-
-/* Extract text styling */
-.extract-container {
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
-}
-
-.extract-card {
-    background: #fff;
-    border-radius: 12px;
-    padding: 20px;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
-}
-
-.extract-header {
-    font-weight: 600;
-    font-size: 1.05em;
-    margin-bottom: 10px;
-    color: #1d1d1f;
-}
-
-.extract-body {
-    font-size: 0.9em;
-    line-height: 1.5;
-    white-space: pre-wrap;
-    color: #333;
-}
-"""
-
-# -------------------------
-# Gradio App Layout
-# -------------------------
-with gr.Blocks(css=custom_css, theme=gr.themes.Soft()) as demo:
-    gr.HTML("""
-    <div class="app-container">
-        <div class="sidebar">
-            <h2>TradeSkor</h2>
-            <button onclick="showPanel('search')" class="active">Search</button>
-            <button onclick="showPanel('extract')">Extract Text</button>
-            <button onclick="showPanel('analytics')">Analytics</button>
-        </div>
-        <div class="main-content">
-            <div id="panel-search"></div>
-            <div id="panel-extract" style="display:none;"></div>
-            <div id="panel-analytics" style="display:none;">
-                <h3>Analytics</h3>
-                <p>Coming soon: Contractor performance and project analysis.</p>
-            </div>
-        </div>
-    </div>
-    <script>
-    function showPanel(panel) {
-        document.querySelectorAll('.main-content > div').forEach(div => div.style.display = 'none');
-        document.getElementById('panel-' + panel).style.display = 'block';
-        document.querySelectorAll('.sidebar button').forEach(btn => btn.classList.remove('active'));
-        event.target.classList.add('active');
-    }
-    </script>
-    """)
-
-    # Search panel
-    with gr.Column(elem_id="panel-search"):
-        gr.Markdown("### Document Search")
-        with gr.Row():
-            file_input = gr.File(
-                file_types=[".txt", ".md", ".zip"],
-                type="filepath",        # ✅ fixed for Gradio 5.x
-                label="Upload Documents",
-                file_count="multiple"
-            )
-            query_input = gr.Textbox(
-                label="Search term",
-                placeholder="e.g., project schedule, invoice, safety plan"
-            )
-        search_btn = gr.Button("Search")
-        output_box = gr.HTML(label="Search Results")
-        search_btn.click(fn=search_documents, inputs=[file_input, query_input], outputs=output_box)
-
-    # Extract text panel
-    with gr.Column(elem_id="panel-extract", visible=False):
-        gr.Markdown("### Extract Text")
-        file_input_extract = gr.File(
-            file_types=[".txt", ".md", ".zip"],
-            type="filepath",        # ✅ fixed for Gradio 5.x
+    with gr.Row():
+        file_input = gr.File(
             label="Upload Documents",
-            file_count="multiple"
+            type="filepath",
+            file_types=[".pdf", ".docx", ".zip"],
+            file_count="multiple"   # ✅ correct parameter for multiple files
         )
-        extract_btn = gr.Button("Extract All Text")
-        extract_output = gr.HTML(label="Extracted Text")
-        extract_btn.click(fn=extract_text_panel, inputs=file_input_extract, outputs=extract_output)
 
+    with gr.Row():
+        query = gr.Textbox(label="🔍 Search Query", placeholder="Enter a word or phrase...")
+
+    search_btn = gr.Button("Search", variant="primary")
+    output = gr.Markdown()
+
+    search_btn.click(fn=search_documents, inputs=[file_input, query], outputs=output)
+
+# -------------------------------
+# Launch
+# -------------------------------
 if __name__ == "__main__":
     demo.launch()
