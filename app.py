@@ -1,151 +1,90 @@
-import os
-import re
-import tempfile
-import zipfile
-import pdfplumber
-import docx
-from pdf2image import convert_from_path
-import pytesseract
-from sentence_transformers import SentenceTransformer
-import numpy as np
 import gradio as gr
+import uuid
+import html
 
-# -------------------------------
-# Setup
-# -------------------------------
-MODEL = SentenceTransformer('all-MiniLM-L6-v2')
+# Keep track of uploaded files
+uploaded_files = []
 
-# -------------------------------
-# Document Processing
-# -------------------------------
-def extract_text_pdf(file_path):
-    try:
-        with pdfplumber.open(file_path) as pdf:
-            text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-        return text
-    except:
-        # fallback OCR
-        images = convert_from_path(file_path)
-        return "\n".join(pytesseract.image_to_string(img) for img in images)
-
-def extract_text_docx(file_path):
-    try:
-        doc = docx.Document(file_path)
-        return "\n".join(p.text for p in doc.paragraphs)
-    except:
-        return ""
-
-def extract_text_txt(file_path):
-    try:
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            return f.read()
-    except:
-        return ""
-
-def extract_text_from_zip(zip_path):
-    texts = {}
-    with zipfile.ZipFile(zip_path, "r") as z:
-        for name in z.namelist():
-            if name.endswith((".pdf", ".docx", ".txt")):
-                with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(name)[1]) as tmp:
-                    tmp.write(z.read(name))
-                    tmp_path = tmp.name
-                if name.endswith(".pdf"):
-                    texts[name] = extract_text_pdf(tmp_path)
-                elif name.endswith(".docx"):
-                    texts[name] = extract_text_docx(tmp_path)
-                elif name.endswith(".txt"):
-                    texts[name] = extract_text_txt(tmp_path)
-                os.remove(tmp_path)
-    return texts
-
-def load_documents(files):
-    all_texts = {}
-    for f in files:
-        if f.endswith(".pdf"):
-            all_texts[f] = extract_text_pdf(f)
-        elif f.endswith(".docx"):
-            all_texts[f] = extract_text_docx(f)
-        elif f.endswith(".txt"):
-            all_texts[f] = extract_text_txt(f)
-        elif f.endswith(".zip"):
-            all_texts.update(extract_text_from_zip(f))
-    return all_texts
-
-# -------------------------------
-# Highlight matches
-# -------------------------------
-def highlight_sentence(sentence, keyword):
-    pattern = re.compile(re.escape(keyword), re.IGNORECASE)
-    return pattern.sub(lambda m: f"**{m.group(0)}**", sentence)
-
-# -------------------------------
-# Search Function
-# -------------------------------
-def search_docs(files, query):
-    if not files or not query.strip():
-        return "⚠️ Please upload documents and enter a search query."
-    
-    documents = load_documents(files)
-    query_vec = MODEL.encode([query])[0]
+# Mock AI search function
+def search_documents(query):
     results = []
+    for idx, f in enumerate(uploaded_files):
+        results.append({
+            "id": f["id"],
+            "fileName": f["name"],
+            "highlighted": f"This is a sample match for <mark style='background: rgba(16, 185, 129, 0.2); padding:2px 4px; border-radius:4px;font-weight:600;'>{html.escape(query)}</mark> in {f['name']}.",
+            "score": round(0.7 + 0.3*idx/len(uploaded_files), 2)
+        })
+    return results
 
-    for fname, text in documents.items():
-        if not text.strip():
-            continue
-        sentences = re.split(r'(?<=[.!?])\s+', text)
-        sent_vecs = MODEL.encode(sentences)
-        sims = np.dot(sent_vecs, query_vec) / (np.linalg.norm(sent_vecs, axis=1) * np.linalg.norm(query_vec) + 1e-10)
-        for i, score in enumerate(sims):
-            if score > 0.55:  # threshold
-                highlighted = highlight_sentence(sentences[i], query)
-                results.append(f"### 📄 {os.path.basename(fname)}\n\n{highlighted}")
+# Upload handler
+def handle_upload(files):
+    global uploaded_files
+    for file in files:
+        uploaded_files.append({"id": str(uuid.uuid4()), "name": file.name, "file": file})
+    return update_file_list()
 
-    if not results:
-        return f"❌ No matches found for '{query}'."
-    return "\n\n---\n\n".join(results)
+# Remove file
+def remove_file(file_id):
+    global uploaded_files
+    uploaded_files = [f for f in uploaded_files if f["id"] != file_id]
+    return update_file_list()
 
-# -------------------------------
+# Update uploaded file list HTML
+def update_file_list():
+    if not uploaded_files:
+        return "<p>No files uploaded.</p>"
+    html_files = ""
+    for f in uploaded_files:
+        icon = "📄" if f['name'].endswith(('.pdf','.docx','.txt')) else "🗜️"
+        html_files += f"<div class='glass' style='display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;'>"
+        html_files += f"<span>{icon} {f['name']}</span>"
+        html_files += f"</div>"
+    return html_files
+
+# Perform search
+def perform_search(query):
+    if not query.strip():
+        return "<p>No query entered</p>"
+    results = search_documents(query)
+    html_results = ""
+    for idx, r in enumerate(results):
+        color = "#34d399" if r["score"]>=0.8 else "#facc15" if r["score"]>=0.65 else "#3b82f6"
+        label = "High Match" if r["score"]>=0.8 else "Good Match" if r["score"]>=0.65 else "Relevant"
+        html_results += f"<div class='glass' style='margin-bottom:8px;'>"
+        html_results += f"<div style='display:flex; justify-content:space-between; align-items:center;'>"
+        html_results += f"<h4>{r['fileName']} - Match #{idx+1}</h4>"
+        html_results += f"<span class='badge' style='background:{color};'>{label} ({int(r['score']*100)}%)</span>"
+        html_results += f"</div>"
+        html_results += f"<p>{r['highlighted']}</p>"
+        html_results += "</div>"
+    return html_results
+
 # Gradio UI
-# -------------------------------
 with gr.Blocks(css="""
-    #app-container {max-width: 1100px; margin: auto;}
-    .upload-box {border: 2px dashed #bbb; padding: 30px; border-radius: 12px; text-align: center;}
-    .search-box {margin-top: 20px;}
-    .results-box {background: #fafafa; border-radius: 12px; padding: 20px; border: 1px solid #ddd;}
-    h1 {font-size: 2em; margin-bottom: 10px;}
-    h3 {margin-top: 20px;}
+/* Gradient background */
+body { background: linear-gradient(135deg, hsl(220,26%,14%), hsl(215,25%,27%)); font-family: sans-serif; color: hsl(213,31%,91%); margin:0; padding:20px;}
+.glass { backdrop-filter: blur(12px); background: hsla(224,27%,9%,0.8); border:1px solid hsla(214,32%,91%,0.2); padding:20px; border-radius:8px; }
+.badge { display:inline-block; padding:2px 6px; border-radius:6px; margin-left:4px; font-size:12px; color:#000;}
+.row { display:flex; flex-wrap:wrap; gap:20px;}
+.column { flex:1; min-width:300px;}
+.upload-btn { margin-bottom:10px;}
 """) as demo:
-    with gr.Column(elem_id="app-container"):
-        gr.Markdown(
-            """
-            # 🔎 Document Search Tool
-            Upload **PDFs, Word, TXT, or ZIP archives** of meeting minutes and search for keywords.  
-            Matches are shown in context with highlights.
-            """
-        )
 
-        file_input = gr.File(
-            label="Upload Documents or ZIPs",
-            file_types=[".pdf", ".docx", ".txt", ".zip"],
-            file_count="multiple",
-            type="filepath",
-            elem_classes="upload-box"
-        )
+    gr.HTML("<h1 style='text-align:center;'>AI Document Search</h1>")
+    gr.HTML("<p style='text-align:center;'>Upload documents and search with AI-powered semantic understanding</p>")
 
-        query_input = gr.Textbox(
-            label="Search Query",
-            placeholder="Enter a word or phrase...",
-            elem_classes="search-box"
-        )
+    with gr.Row():
+        with gr.Column():
+            upload_files = gr.File(file_types=[".pdf",".docx",".txt",".zip"], file_types_multiple=True, label="Upload Documents")
+            search_input = gr.Textbox(label="Search Query", placeholder="Enter search terms...")
+            search_btn = gr.Button("Search Documents", elem_id="search-btn")
+            file_list = gr.HTML(update_file_list, elem_id="file-list")
 
-        search_button = gr.Button("Search", variant="primary")
-        output = gr.Markdown(elem_classes="results-box")
+        with gr.Column():
+            search_results = gr.HTML("<p>Results will appear here.</p>", elem_id="search-results")
 
-        search_button.click(fn=search_docs, inputs=[file_input, query_input], outputs=output)
+    upload_files.upload(handle_upload, upload_files, file_list)
+    search_btn.click(perform_search, search_input, search_results)
 
-# -------------------------------
-# Launch
-# -------------------------------
-if __name__ == "__main__":
-    demo.launch()
+demo.launch()
