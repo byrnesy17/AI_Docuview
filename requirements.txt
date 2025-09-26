@@ -1,11 +1,6 @@
 gradio==5.47.1
 gradio-client==1.13.2
+websockets>=13.0,<16.0
+sentence-transformers>=2.2.2
+torch>=2.1.0
 numpy
-pillow
-fastapi
-uvicorn
-httpx
-aiofiles
-jinja2
-typing-extensions
-pydantic==2.10.6
