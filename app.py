@@ -2,24 +2,16 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import os
-import tempfile
 import zipfile
 import io
 from datetime import datetime
 import re
 from collections import Counter
+import sys
 
 # Document processing
 from docx import Document
 import PyPDF2
-
-# ML and search
-from sentence_transformers import SentenceTransformer
-import faiss
-from sklearn.metrics.pairwise import cosine_similarity
-
-# UI components
-from streamlit_option_menu import option_menu
 
 # Configure the page
 st.set_page_config(
@@ -85,11 +77,18 @@ class MeetingMinutesSearch:
         self.load_models()
     
     def load_models(self):
-        """Load ML models for semantic search"""
+        """Load ML models for semantic search with fallback"""
         try:
+            # Try to import with compatibility handling
+            from sentence_transformers import SentenceTransformer
             self.model = SentenceTransformer('all-MiniLM-L6-v2')
+            st.success("✅ AI model loaded successfully!")
+        except ImportError as e:
+            st.warning(f"⚠️ Advanced AI features disabled: {e}")
+            self.model = None
         except Exception as e:
-            st.error(f"Error loading model: {e}")
+            st.warning(f"⚠️ Could not load AI model: {e}")
+            self.model = None
     
     def extract_text_from_pdf(self, file):
         """Extract text from PDF file"""
@@ -116,7 +115,7 @@ class MeetingMinutesSearch:
             return ""
     
     def simple_text_analysis(self, text):
-        """Perform basic text analysis without spaCy"""
+        """Perform basic text analysis"""
         # Count words
         words = re.findall(r'\b\w+\b', text.lower())
         word_count = len(words)
@@ -180,35 +179,56 @@ class MeetingMinutesSearch:
         return documents, metadata
     
     def build_search_index(self, documents):
-        """Build FAISS search index for semantic search"""
-        if not documents:
+        """Build search index for semantic search with fallback"""
+        if not documents or self.model is None:
             return None
         
         try:
             # Generate embeddings
             embeddings = self.model.encode(documents)
             
-            # Create FAISS index
-            dimension = embeddings.shape[1]
-            index = faiss.IndexFlatIP(dimension)
-            
-            # Normalize embeddings for cosine similarity
-            faiss.normalize_L2(embeddings)
-            index.add(embeddings)
-            
-            return index, embeddings
+            # Try to import FAISS, with fallback
+            try:
+                import faiss
+                # Create FAISS index
+                dimension = embeddings.shape[1]
+                index = faiss.IndexFlatIP(dimension)
+                
+                # Normalize embeddings for cosine similarity
+                faiss.normalize_L2(embeddings)
+                index.add(embeddings)
+                
+                return index, embeddings
+            except ImportError:
+                st.warning("FAISS not available, using simple similarity search")
+                return None, embeddings
+                
         except Exception as e:
             st.error(f"Error building search index: {e}")
             return None, None
     
     def semantic_search(self, query, top_k=5):
-        """Perform semantic search with highlighting"""
-        if self.index is None or not self.documents:
+        """Perform semantic search with fallback to keyword search"""
+        if not self.documents:
             return []
         
+        # Try semantic search if model is available
+        if self.model is not None and self.index is not None:
+            try:
+                return self._semantic_search_with_faiss(query, top_k)
+            except Exception as e:
+                st.warning(f"Semantic search failed, using keyword search: {e}")
+        
+        # Fallback to keyword search
+        return self.keyword_search(query, self.documents, self.metadata, top_k)
+    
+    def _semantic_search_with_faiss(self, query, top_k):
+        """Internal method for FAISS-based semantic search"""
+        # Encode query
+        query_embedding = self.model.encode([query])
+        
         try:
-            # Encode query
-            query_embedding = self.model.encode([query])
+            import faiss
             faiss.normalize_L2(query_embedding)
             
             # Search
@@ -217,28 +237,51 @@ class MeetingMinutesSearch:
             results = []
             for score, idx in zip(scores[0], indices[0]):
                 if idx < len(self.documents):
-                    # Find relevant sentences using semantic similarity
-                    document_text = self.documents[idx]
-                    relevant_sentences = self.find_relevant_sentences_semantic(query, document_text)
-                    
                     results.append({
-                        'document': document_text,
+                        'document': self.documents[idx],
                         'metadata': self.metadata[idx],
                         'score': float(score),
-                        'matches': relevant_sentences
+                        'matches': self._find_semantic_matches(query, self.documents[idx])
                     })
             
             return results
-        except Exception as e:
-            st.error(f"Search error: {e}")
-            return []
+        except:
+            # Fallback to simple similarity search
+            return self._semantic_search_simple(query, top_k)
     
-    def find_relevant_sentences_semantic(self, query, document_text):
-        """Find semantically relevant sentences using sentence embeddings"""
+    def _semantic_search_simple(self, query, top_k):
+        """Simple semantic search without FAISS"""
+        from sklearn.metrics.pairwise import cosine_similarity
+        
+        query_embedding = self.model.encode([query])
+        doc_embeddings = self.model.encode(self.documents)
+        
+        similarities = cosine_similarity(query_embedding, doc_embeddings)[0]
+        top_indices = np.argsort(similarities)[::-1][:top_k]
+        
+        results = []
+        for idx in top_indices:
+            if similarities[idx] > 0.1:  # Threshold
+                results.append({
+                    'document': self.documents[idx],
+                    'metadata': self.metadata[idx],
+                    'score': float(similarities[idx]),
+                    'matches': self._find_semantic_matches(query, self.documents[idx])
+                })
+        
+        return results
+    
+    def _find_semantic_matches(self, query, document_text):
+        """Find semantically relevant sentences"""
+        if self.model is None:
+            return []
+        
         try:
-            # Split into sentences (simple approach)
+            from sklearn.metrics.pairwise import cosine_similarity
+            
+            # Split into sentences
             sentences = re.split(r'[.!?]+', document_text)
-            sentences = [s.strip() for s in sentences if len(s.strip()) > 10]  # Filter short sentences
+            sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
             
             if not sentences:
                 return []
@@ -252,45 +295,65 @@ class MeetingMinutesSearch:
             
             matches = []
             for i, similarity in enumerate(similarities):
-                if similarity > 0.3:  # Similarity threshold
+                if similarity > 0.3:
                     matches.append({
                         'sentence': sentences[i],
                         'similarity': similarity,
                         'position': i
                     })
             
-            return sorted(matches, key=lambda x: x['similarity'], reverse=True)[:5]
-        except Exception as e:
+            return sorted(matches, key=lambda x: x['similarity'], reverse=True)[:3]
+        except:
             return []
     
-    def keyword_search(self, query, documents, metadata):
-        """Fallback keyword search if semantic search fails"""
+    def keyword_search(self, query, documents, metadata, top_k=5):
+        """Keyword search with basic matching"""
         results = []
         query_lower = query.lower()
+        query_words = query_lower.split()
         
         for i, (doc, meta) in enumerate(zip(documents, metadata)):
-            # Simple keyword matching
-            if query_lower in doc.lower():
-                # Find sentences containing the keyword
-                sentences = meta['sentences']
-                keyword_sentences = []
+            doc_lower = doc.lower()
+            
+            # Calculate match score based on word presence
+            match_score = 0
+            keyword_sentences = []
+            
+            for j, sentence in enumerate(meta['sentences']):
+                sentence_lower = sentence.lower()
+                sentence_score = 0
                 
-                for j, sentence in enumerate(sentences):
-                    if query_lower in sentence.lower():
+                for word in query_words:
+                    if word in sentence_lower:
+                        sentence_score += 1
+                        # Highlight all occurrences
+                        highlighted = re.sub(
+                            f'({re.escape(word)})', 
+                            r'<span class="highlight">\1</span>', 
+                            sentence, 
+                            flags=re.IGNORECASE
+                        )
+                        
                         keyword_sentences.append({
-                            'sentence': sentence,
-                            'similarity': 1.0,  # Exact match
+                            'sentence': highlighted,
+                            'similarity': sentence_score / len(query_words),
                             'position': j
                         })
+                
+                match_score += sentence_score
+            
+            if match_score > 0:
+                # Normalize score
+                normalized_score = min(match_score / (len(query_words) * 10), 1.0)
                 
                 results.append({
                     'document': doc,
                     'metadata': meta,
-                    'score': 0.8,  # Default score for keyword matches
-                    'matches': keyword_sentences[:5]  # Limit to 5 matches
+                    'score': normalized_score,
+                    'matches': keyword_sentences[:5]  # Limit matches
                 })
         
-        return sorted(results, key=lambda x: x['score'], reverse=True)
+        return sorted(results, key=lambda x: x['score'], reverse=True)[:top_k]
 
 def main():
     # Initialize session state
@@ -310,6 +373,7 @@ def main():
         </div>
         """, unsafe_allow_html=True)
         
+        from streamlit_option_menu import option_menu
         selected = option_menu(
             menu_title="Navigation",
             options=["Dashboard", "Upload", "Search", "Analytics"],
@@ -324,6 +388,13 @@ def main():
             st.info(f"📊 Documents: {len(search_engine.metadata)}")
             total_words = sum(meta['word_count'] for meta in search_engine.metadata)
             st.success(f"📝 Total Words: {total_words:,}")
+        
+        # Model status
+        st.markdown("### AI Status")
+        if search_engine.model is not None:
+            st.success("✅ Semantic Search Enabled")
+        else:
+            st.warning("⚠️ Keyword Search Only")
 
     # Main content based on selection
     if selected == "Dashboard":
@@ -344,55 +415,60 @@ def show_dashboard(search_engine):
     with col1:
         st.markdown("""
         <div class="card">
-            <h3>🚀 Smart Semantic Search</h3>
-            <p>Finds related concepts and meanings beyond exact keyword matching.</p>
+            <h3>🚀 Smart Search</h3>
+            <p>Advanced search that understands context and meaning.</p>
         </div>
         """, unsafe_allow_html=True)
     
     with col2:
         st.markdown("""
         <div class="card">
-            <h3>📊 AI-Powered Insights</h3>
-            <p>Extract meaningful patterns and trends from your meetings.</p>
+            <h3>📊 Document Insights</h3>
+            <p>Extract meaningful patterns from your meetings.</p>
         </div>
         """, unsafe_allow_html=True)
     
     with col3:
         st.markdown("""
         <div class="card">
-            <h3>💾 Multi-Format Support</h3>
-            <p>Upload PDF and Word documents individually or in ZIP folders.</p>
+            <h3>💾 Multi-Format</h3>
+            <p>Upload PDF and Word documents with ease.</p>
         </div>
         """, unsafe_allow_html=True)
     
-    # Quick start guide
+    # Feature status
     st.markdown("---")
-    st.markdown("## 🚀 Quick Start Guide")
+    col1, col2 = st.columns(2)
     
-    steps = [
-        "1. **Upload** your meeting minutes (PDF/DOCX) in the Upload section",
-        "2. **Search** for terms, concepts, or ideas in the Search section", 
-        "3. **View** highlighted results with relevance scores",
-        "4. **Analyze** patterns and insights in the Analytics section"
-    ]
+    with col1:
+        st.markdown("### 🎯 Current Features")
+        features = [
+            "✅ PDF and Word document support",
+            "✅ ZIP folder uploads",
+            "✅ Keyword search with highlighting",
+            "✅ Document analytics and insights",
+            "✅ Modern, responsive UI"
+        ]
+        
+        for feature in features:
+            st.markdown(feature)
     
-    for step in steps:
-        st.markdown(step)
-    
-    # Feature highlights
-    st.markdown("---")
-    st.markdown("## ✨ Key Features")
-    
-    features = [
-        "**Semantic Understanding**: Search for 'animals' and find mentions of 'pets', 'wildlife', 'zoo'",
-        "**Multi-Format Support**: Upload PDF and Word documents with automatic text extraction",
-        "**Relevance Scoring**: AI-powered ranking of results by semantic similarity",
-        "**Contextual Highlighting**: See your search terms in context with highlighted matches",
-        "**Advanced Analytics**: Get insights about your document collection and usage patterns"
-    ]
-    
-    for feature in features:
-        st.markdown(f"✅ {feature}")
+    with col2:
+        st.markdown("### 🤖 AI Features")
+        ai_features = [
+            "🔍 Semantic search understanding",
+            "📊 Relevance scoring",
+            "💡 Contextual matching"
+        ]
+        
+        if search_engine.model is not None:
+            ai_features = [f.replace("🔍", "✅") for f in ai_features]
+        else:
+            ai_features = [f.replace("🔍", "⚠️") for f in ai_features]
+            st.info("AI features will be enabled automatically when models load")
+        
+        for feature in ai_features:
+            st.markdown(feature)
 
 def show_upload_section(search_engine):
     """Handle document uploads"""
@@ -427,13 +503,12 @@ def show_upload_section(search_engine):
                     if file_info.filename.lower().endswith(('.pdf', '.docx')):
                         with z.open(file_info.filename) as file:
                             file_data = file.read()
-                            # Create a file-like object
                             file_obj = io.BytesIO(file_data)
                             file_obj.name = file_info.filename
                             uploaded_files.append(file_obj)
     
     if uploaded_files and st.button("Process Documents", type="primary"):
-        with st.spinner("Processing documents... This may take a moment."):
+        with st.spinner("Processing documents..."):
             documents, metadata = search_engine.process_uploaded_files(uploaded_files)
             
             if documents:
@@ -442,12 +517,10 @@ def show_upload_section(search_engine):
                 
                 # Build search index
                 index, embeddings = search_engine.build_search_index(documents)
-                if index is not None:
-                    search_engine.index = index
-                    st.session_state.documents_processed = True
-                    st.success(f"✅ Successfully processed {len(documents)} documents!")
-                else:
-                    st.warning("⚠️ Search index could not be built, but documents are loaded for keyword search.")
+                search_engine.index = index
+                st.session_state.documents_processed = True
+                
+                st.success(f"✅ Successfully processed {len(documents)} documents!")
                 
                 # Show summary
                 col1, col2, col3 = st.columns(3)
@@ -457,175 +530,94 @@ def show_upload_section(search_engine):
                     total_words = sum(meta['word_count'] for meta in metadata)
                     st.metric("Total Words", f"{total_words:,}")
                 with col3:
-                    avg_words = total_words // len(metadata) if metadata else 0
-                    st.metric("Avg Words per Doc", f"{avg_words:,}")
-                
-                # Show document preview
-                st.markdown("### 📋 Document Preview")
-                for i, meta in enumerate(metadata[:3]):  # Show first 3
-                    with st.expander(f"📄 {meta['filename']} ({meta['word_count']} words)"):
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.write(f"**Size:** {meta['file_size']:,} bytes")
-                            st.write(f"**Sentences:** {meta['sentence_count']}")
-                        with col2:
-                            st.write(f"**Uploaded:** {meta['upload_date'].strftime('%Y-%m-%d %H:%M')}")
-                            st.write("**Common words:**")
-                            for word, count in meta['common_words'][:3]:
-                                st.write(f"  - {word} ({count})")
-                        
-                        st.write("**Preview:**")
-                        preview = meta['content'][:400] + "..." if len(meta['content']) > 400 else meta['content']
-                        st.text(preview)
+                    if search_engine.model is not None:
+                        st.metric("Search Mode", "AI Semantic")
+                    else:
+                        st.metric("Search Mode", "Keyword")
 
 def show_search_section(search_engine):
     """Handle search functionality"""
-    st.markdown("## 🔍 Smart Search")
+    st.markdown("## 🔍 Search Meeting Minutes")
     
     if not search_engine.documents:
-        st.warning("📁 Please upload some documents first to enable search.")
-        st.info("Go to the Upload section to add your meeting minutes.")
+        st.warning("📁 Please upload documents first in the Upload section.")
         return
     
     # Search interface
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
-        query = st.text_input(
-            "Enter your search query:",
-            placeholder="e.g., project timeline, budget discussion, action items, marketing strategy..."
-        )
-    
-    with col2:
-        top_k = st.selectbox("Results to show:", [5, 10, 15])
-    
-    # Search type options
-    search_type = st.radio(
-        "Search type:",
-        ["Semantic Search (Recommended)", "Keyword Search"],
-        horizontal=True
+    query = st.text_input(
+        "Search for words, phrases, or concepts:",
+        placeholder="e.g., project timeline, budget discussion, action items..."
     )
     
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        top_k = st.selectbox("Results to show:", [5, 10, 15])
+    with col2:
+        if search_engine.model is not None:
+            st.info("🤖 AI Semantic Search Active")
+        else:
+            st.warning("🔤 Keyword Search Active")
+    
     if query:
-        with st.spinner("🔍 Searching through documents..."):
-            if search_type == "Semantic Search (Recommended)" and search_engine.index is not None:
-                results = search_engine.semantic_search(query, top_k=top_k)
-            else:
-                results = search_engine.keyword_search(query, search_engine.documents, search_engine.metadata)
+        with st.spinner("Searching..."):
+            results = search_engine.semantic_search(query, top_k=top_k)
             
             if results:
-                st.markdown(f"### 📊 Found {len(results)} relevant documents")
+                st.markdown(f"### 📊 Found {len(results)} matches")
                 
                 for i, result in enumerate(results):
                     # Document card
                     st.markdown(f"""
-                    <div class="card document-card">
+                    <div class="card">
                         <h3>📄 {result['metadata']['filename']}</h3>
-                        <p><span class="match-score">Relevance Score: {result['score']:.3f}</span> • 
-                        {result['metadata']['word_count']} words • 
-                        {result['metadata']['sentence_count']} sentences</p>
+                        <p><span class="match-score">Relevance: {result['score']:.3f}</span> • 
+                        {result['metadata']['word_count']} words</p>
                     </div>
                     """, unsafe_allow_html=True)
                     
-                    # Show top matches
+                    # Show matches
                     if result['matches']:
-                        st.markdown("**Top matches in this document:**")
                         for match in result['matches']:
-                            # Highlight the query in context
-                            display_text = match['sentence']
-                            # Simple case-insensitive highlighting
-                            query_words = query.lower().split()
-                            for word in query_words:
-                                if word in display_text.lower():
-                                    display_text = re.sub(
-                                        f'({re.escape(word)})', 
-                                        r'<span class="highlight">\1</span>', 
-                                        display_text, 
-                                        flags=re.IGNORECASE
-                                    )
-                            
                             st.markdown(f"""
-                            <div style="margin-left: 20px; margin-bottom: 10px; padding: 10px; background: #f8f9fa; border-radius: 5px;">
-                                <p>🔹 {display_text}</p>
+                            <div style="margin: 10px 0; padding: 10px; background: #f8f9fa; border-radius: 5px;">
+                                <p>{match['sentence']}</p>
                                 <small>Similarity: {match['similarity']:.3f}</small>
                             </div>
                             """, unsafe_allow_html=True)
                     
-                    # Show full document content
-                    with st.expander("📖 View full document content"):
-                        st.text_area(
-                            f"Content of {result['metadata']['filename']}",
-                            result['document'],
-                            height=200,
-                            key=f"doc_{i}"
-                        )
+                    with st.expander("View full document"):
+                        st.text_area("Content", result['document'], height=150, key=f"doc_{i}")
                     
                     st.markdown("---")
             else:
-                st.warning("❌ No matches found. Try a different search term or more general query.")
-                st.info("💡 Tip: Try searching for broader concepts or related terms.")
+                st.warning("No matches found. Try different search terms.")
 
 def show_analytics_section(search_engine):
     """Show analytics and insights"""
-    st.markdown("## 📊 Analytics & Insights")
+    st.markdown("## 📊 Analytics")
     
     if not search_engine.metadata:
-        st.warning("📁 Upload documents to see analytics and insights.")
+        st.warning("Upload documents to see analytics.")
         return
     
-    # Basic statistics
-    st.markdown("### 📈 Document Statistics")
-    col1, col2, col3, col4 = st.columns(4)
-    
+    # Statistics
+    col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("Total Documents", len(search_engine.metadata))
-    
     with col2:
         total_words = sum(meta['word_count'] for meta in search_engine.metadata)
         st.metric("Total Words", f"{total_words:,}")
-    
     with col3:
         avg_words = total_words // len(search_engine.metadata)
         st.metric("Avg Words/Doc", f"{avg_words:,}")
     
-    with col4:
-        total_size = sum(meta['file_size'] for meta in search_engine.metadata)
-        st.metric("Total Size", f"{total_size / 1024:.1f} KB")
-    
-    # Word count distribution
-    if len(search_engine.metadata) > 1:
-        st.markdown("### 📊 Document Size Distribution")
-        word_counts = [meta['word_count'] for meta in search_engine.metadata]
-        
-        import plotly.express as px
-        fig = px.histogram(x=word_counts, nbins=10, title="Distribution of Document Word Counts")
-        fig.update_layout(xaxis_title="Word Count", yaxis_title="Number of Documents")
-        st.plotly_chart(fig)
-    
-    # Common words analysis
-    st.markdown("### 🔤 Most Common Words")
-    all_words = []
-    for meta in search_engine.metadata:
-        all_words.extend([word for word, count in meta['common_words']])
-    
-    if all_words:
-        word_freq = Counter(all_words)
-        common_words_df = pd.DataFrame(word_freq.most_common(20), columns=['Word', 'Frequency'])
-        st.dataframe(common_words_df, use_container_width=True)
-    
     # Document list
-    st.markdown("### 📋 All Documents")
+    st.markdown("### 📋 Documents")
     for meta in search_engine.metadata:
         with st.expander(f"{meta['filename']} ({meta['word_count']} words)"):
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write(f"**Uploaded:** {meta['upload_date'].strftime('%Y-%m-%d %H:%M')}")
-                st.write(f"**Size:** {meta['file_size']:,} bytes")
-            with col2:
-                st.write(f"**Sentences:** {meta['sentence_count']}")
-                st.write(f"**Words:** {meta['word_count']}")
-            
-            st.write("**Top words:**")
+            st.write(f"**Size:** {meta['file_size']:,} bytes")
+            st.write(f"**Sentences:** {meta['sentence_count']}")
+            st.write("**Common words:**")
             for word, count in meta['common_words'][:5]:
                 st.write(f"- {word} ({count})")
 
