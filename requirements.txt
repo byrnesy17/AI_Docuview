@@ -9,5 +9,4 @@ pillow==9.5.0
 plotly==5.14.1
 numpy==1.24.3
 scikit-learn==1.2.2
-spacy==3.5.3
 streamlit-option-menu==0.3.2
