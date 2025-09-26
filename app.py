@@ -140,6 +140,9 @@ def keyword_search(query, documents, metadata, top_k=5):
     query_lower = query.lower()
     query_words = [word for word in query_lower.split() if len(word) > 2]  # Filter short words
     
+    if not query_words:
+        return []
+    
     for i, (doc, meta) in enumerate(zip(documents, metadata)):
         doc_lower = doc.lower()
         match_score = 0
@@ -182,7 +185,7 @@ def keyword_search(query, documents, metadata, top_k=5):
     return sorted(results, key=lambda x: x['score'], reverse=True)[:top_k]
 
 def main():
-    # Initialize data in session state if not exists
+    # Initialize session state with proper checks
     if 'documents' not in st.session_state:
         st.session_state.documents = []
     if 'metadata' not in st.session_state:
@@ -206,9 +209,12 @@ def main():
         
         st.markdown("---")
         st.markdown("### Quick Stats")
-        if st.session_state.metadata:
-            st.info(f"📊 Documents: {len(st.session_state.metadata)}")
-            total_words = sum(meta['word_count'] for meta in st.session_state.metadata)
+        
+        # Safe access to session state
+        metadata = st.session_state.metadata if 'metadata' in st.session_state else []
+        if metadata:
+            st.info(f"📊 Documents: {len(metadata)}")
+            total_words = sum(meta['word_count'] for meta in metadata)
             st.success(f"📝 Total Words: {total_words:,}")
         else:
             st.info("📊 Documents: 0")
@@ -273,15 +279,16 @@ def show_dashboard():
     st.markdown("---")
     st.markdown("## 📈 Current Status")
     
-    if st.session_state.metadata:
+    metadata = st.session_state.metadata if 'metadata' in st.session_state else []
+    if metadata:
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Documents Loaded", len(st.session_state.metadata))
+            st.metric("Documents Loaded", len(metadata))
         with col2:
-            total_words = sum(meta['word_count'] for meta in st.session_state.metadata)
+            total_words = sum(meta['word_count'] for meta in metadata)
             st.metric("Total Words", f"{total_words:,}")
         with col3:
-            avg_words = total_words // len(st.session_state.metadata) if st.session_state.metadata else 0
+            avg_words = total_words // len(metadata) if metadata else 0
             st.metric("Average per Doc", f"{avg_words:,}")
     else:
         st.info("No documents uploaded yet. Go to the Upload section to get started!")
@@ -365,9 +372,13 @@ def show_upload_section():
 
 def show_search_section():
     """Handle search functionality"""
+    # Safe access to session state
+    documents = st.session_state.documents if 'documents' in st.session_state else []
+    metadata = st.session_state.metadata if 'metadata' in st.session_state else []
+    
     st.markdown("## 🔍 Search Meeting Minutes")
     
-    if not st.session_state.documents:
+    if not documents:
         st.warning("📁 Please upload documents first in the Upload section.")
         st.info("Go to 'Upload' to add your meeting minutes.")
         return
@@ -382,11 +393,11 @@ def show_search_section():
     with col1:
         top_k = st.selectbox("Number of results:", [5, 10, 15])
     with col2:
-        st.info(f"Searching in {len(st.session_state.documents)} documents")
+        st.info(f"Searching in {len(documents)} documents")
     
-    if query:
+    if query and query.strip():
         with st.spinner("Searching through documents..."):
-            results = keyword_search(query, st.session_state.documents, st.session_state.metadata, top_k=top_k)
+            results = keyword_search(query, documents, metadata, top_k=top_k)
             
             if results:
                 st.markdown(f"### 📊 Found {len(results)} matches")
@@ -429,9 +440,12 @@ def show_search_section():
 
 def show_analytics_section():
     """Show analytics and insights"""
+    # Safe access to session state
+    metadata = st.session_state.metadata if 'metadata' in st.session_state else []
+    
     st.markdown("## 📊 Analytics & Insights")
     
-    if not st.session_state.metadata:
+    if not metadata:
         st.warning("Upload documents to see analytics.")
         return
     
@@ -440,24 +454,24 @@ def show_analytics_section():
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("Total Documents", len(st.session_state.metadata))
+        st.metric("Total Documents", len(metadata))
     
     with col2:
-        total_words = sum(meta['word_count'] for meta in st.session_state.metadata)
+        total_words = sum(meta['word_count'] for meta in metadata)
         st.metric("Total Words", f"{total_words:,}")
     
     with col3:
-        avg_words = total_words // len(st.session_state.metadata)
+        avg_words = total_words // len(metadata)
         st.metric("Avg Words/Doc", f"{avg_words:,}")
     
     with col4:
-        total_size = sum(meta['file_size'] for meta in st.session_state.metadata)
+        total_size = sum(meta['file_size'] for meta in metadata)
         st.metric("Total Size", f"{total_size / 1024:.1f} KB")
     
     # Common words analysis
     st.markdown("### 🔤 Most Common Words")
     all_words = []
-    for meta in st.session_state.metadata:
+    for meta in metadata:
         all_words.extend([word for word, count in meta['common_words']])
     
     if all_words:
@@ -472,7 +486,7 @@ def show_analytics_section():
     
     # Document list
     st.markdown("### 📋 Document Details")
-    for meta in st.session_state.metadata:
+    for meta in metadata:
         with st.expander(f"{meta['filename']} ({meta['word_count']} words)"):
             col1, col2 = st.columns(2)
             with col1:
