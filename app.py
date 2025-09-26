@@ -1,105 +1,125 @@
-import streamlit as st
+import gradio as gr
+import zipfile
+import io
+from datetime import datetime
+import re
+from collections import Counter
 
-# ONLY this at top level - no other Streamlit calls, no session state
-st.set_page_config(
-    page_title="MeetSearch Pro",
-    page_icon="🔍",
-    layout="wide"
-)
-
-def main():
-    """All app code lives here"""
-    # Initialize session state safely
-    if 'docs' not in st.session_state:
-        st.session_state.docs = []
-        st.session_state.meta = []
-    
-    # App UI
-    st.title("🔍 MeetSearch Pro")
-    st.write("Upload and search meeting minutes")
-    
-    # File upload
-    uploaded_files = st.file_uploader(
-        "Choose PDF or DOCX files",
-        type=['pdf', 'docx'],
-        accept_multiple_files=True
-    )
-    
-    if uploaded_files and st.button("Process Files"):
-        process_files(uploaded_files)
-    
-    # Search functionality
-    if st.session_state.docs:
-        search_interface()
-    else:
-        st.info("Upload documents to enable search")
-    
-    # Analytics
-    if st.session_state.meta:
-        show_analytics()
-
-def process_files(uploaded_files):
-    """Process uploaded files"""
+try:
     from docx import Document
     import PyPDF2
-    import re
+except ImportError:
+    print("Missing dependencies")
+
+class DocumentSearch:
+    def __init__(self):
+        self.documents = []
+        self.metadata = []
     
-    new_docs = []
-    new_meta = []
-    
-    for file in uploaded_files:
-        text = ""
+    def extract_text(self, file):
+        """Extract text from PDF or DOCX"""
         try:
             if file.name.lower().endswith('.pdf'):
                 reader = PyPDF2.PdfReader(file)
-                text = " ".join([page.extract_text() or "" for page in reader.pages])
+                return " ".join([page.extract_text() or "" for page in reader.pages])
             elif file.name.lower().endswith('.docx'):
                 doc = Document(file)
-                text = " ".join([p.text for p in doc.paragraphs if p.text])
+                return " ".join([p.text for p in doc.paragraphs if p.text])
         except Exception as e:
-            st.error(f"Error with {file.name}: {str(e)}")
-            continue
+            return f"Error: {str(e)}"
+        return ""
+    
+    def process_files(self, files):
+        """Process uploaded files"""
+        self.documents = []
+        self.metadata = []
         
-        if text and len(text.strip()) > 10:
-            words = len(text.split())
-            new_docs.append(text)
-            new_meta.append({
-                'name': file.name,
-                'words': words,
-                'text': text
-            })
+        for file in files:
+            text = self.extract_text(file)
+            if text and not text.startswith("Error") and len(text) > 10:
+                words = len(re.findall(r'\w+', text))
+                sentences = len([s for s in re.split(r'[.!?]+', text) if s.strip()])
+                
+                self.metadata.append({
+                    'filename': file.name,
+                    'word_count': words,
+                    'sentence_count': sentences,
+                    'content': text
+                })
+                self.documents.append(text)
+        
+        return f"✅ Processed {len(self.documents)} documents"
     
-    if new_docs:
-        st.session_state.docs = new_docs
-        st.session_state.meta = new_meta
-        st.success(f"Processed {len(new_docs)} documents!")
-
-def search_interface():
-    """Search functionality"""
-    query = st.text_input("Search for:")
-    
-    if query:
+    def search_documents(self, query):
+        """Search through documents"""
+        if not self.documents or not query:
+            return "No documents or query provided"
+        
         results = []
-        for doc, meta in zip(st.session_state.docs, st.session_state.meta):
-            if query.lower() in doc.lower():
-                results.append((meta['name'], doc, meta))
+        query_lower = query.lower()
+        
+        for i, (doc, meta) in enumerate(zip(self.documents, self.metadata)):
+            if query_lower in doc.lower():
+                # Simple highlighting
+                highlighted = doc.replace(query, f"**{query}**")
+                results.append(f"📄 {meta['filename']} ({meta['word_count']} words)\n{highlighted[:500]}...")
         
         if results:
-            st.write(f"Found {len(results)} matches:")
-            for name, doc, meta in results:
-                with st.expander(f"{name} - {meta['words']} words"):
-                    st.write(doc[:1000] + "..." if len(doc) > 1000 else doc)
+            return "\n\n".join(results)
         else:
-            st.info("No matches found")
+            return "No matches found"
+    
+    def get_stats(self):
+        """Get document statistics"""
+        if not self.metadata:
+            return "No documents loaded"
+        
+        total_docs = len(self.metadata)
+        total_words = sum(m['word_count'] for m in self.metadata)
+        avg_words = total_words // total_docs if total_docs > 0 else 0
+        
+        return f"Documents: {total_docs}\nTotal Words: {total_words}\nAverage: {avg_words} words/doc"
 
-def show_analytics():
-    """Show analytics"""
-    meta = st.session_state.meta
-    st.write(f"**Documents:** {len(meta)}")
-    total_words = sum(m['words'] for m in meta)
-    st.write(f"**Total words:** {total_words}")
-    st.write(f"**Average per document:** {total_words // len(meta)}")
+# Create the search engine
+search_engine = DocumentSearch()
 
-# REQUIRED: This conditional ensures proper initialization
+# Create Gradio interface
+with gr.Blocks(title="MeetSearch Pro", theme=gr.themes.Soft()) as demo:
+    gr.Markdown("# 🔍 MeetSearch Pro")
+    gr.Markdown("Upload and search meeting minutes")
+    
+    with gr.Tab("Upload"):
+        file_input = gr.File(file_count="multiple", file_types=[".pdf", ".docx"], label="Upload PDF or DOCX files")
+        upload_btn = gr.Button("Process Documents")
+        upload_output = gr.Textbox(label="Status", interactive=False)
+        
+        upload_btn.click(
+            fn=search_engine.process_files,
+            inputs=file_input,
+            outputs=upload_output
+        )
+    
+    with gr.Tab("Search"):
+        search_input = gr.Textbox(label="Search Query", placeholder="Enter keywords to search for...")
+        search_btn = gr.Button("Search")
+        search_output = gr.Textbox(label="Results", lines=10, interactive=False)
+        
+        search_btn.click(
+            fn=search_engine.search_documents,
+            inputs=search_input,
+            outputs=search_output
+        )
+    
+    with gr.Tab("Analytics"):
+        stats_btn = gr.Button("Show Statistics")
+        stats_output = gr.Textbox(label="Document Statistics", interactive=False)
+        
+        stats_btn.click(
+            fn=search_engine.get_stats,
+            inputs=[],
+            outputs=stats_output
+        )
+
+# Launch the app
 if __name__ == "__main__":
-    main()
+    demo.launch(share=True)
