@@ -2,9 +2,11 @@ gradio==3.50.2
 gradio-client==0.2.3
 websockets==11.0.3
 sentence-transformers>=2.2.2
-torch>=1.11.0
+torch>=1.13.1
 PyPDF2>=3.0.0
 python-docx>=0.8.11
 pandas>=1.5.0
 scikit-learn>=1.2.0
-openpyxl>=3.0.0
+openpyxl>=3.0.10
+fuzzywuzzy>=0.18.0
+rapidfuzz>=2.16.1
