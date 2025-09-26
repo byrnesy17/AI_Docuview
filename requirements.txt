@@ -6,3 +6,4 @@ openpyxl>=3.0.0
 sentence-transformers>=2.2.2
 torch>=1.11.0
 scikit-learn>=1.2.0
+websockets>=11.0.0
