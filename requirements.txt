@@ -1,6 +1,7 @@
 gradio==5.47.1
 gradio-client==1.13.2
 sentence-transformers==2.2.2
+huggingface-hub==0.14.1
 PyPDF2==3.0.1
 torch>=2.1.0
 numpy
