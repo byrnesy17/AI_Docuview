@@ -1,6 +1,4 @@
 import streamlit as st
-import pandas as pd
-import numpy as np
 import zipfile
 import io
 from datetime import datetime
@@ -53,202 +51,182 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-class MeetingMinutesSearch:
-    def __init__(self):
-        self.model = None
-        self.documents = []
-        self.metadata = []
-        self._initialize_session_state()
+def extract_text_from_pdf(file):
+    """Extract text from PDF file"""
+    try:
+        pdf_reader = PyPDF2.PdfReader(file)
+        text = ""
+        for page in pdf_reader.pages:
+            text += page.extract_text() or ""
+        return text
+    except Exception as e:
+        st.error(f"Error reading PDF: {e}")
+        return ""
+
+def extract_text_from_docx(file):
+    """Extract text from DOCX file"""
+    try:
+        doc = Document(file)
+        text = ""
+        for paragraph in doc.paragraphs:
+            if paragraph.text.strip():
+                text += paragraph.text + "\n"
+        return text
+    except Exception as e:
+        st.error(f"Error reading DOCX: {e}")
+        return ""
+
+def simple_text_analysis(text):
+    """Perform basic text analysis"""
+    # Count words
+    words = re.findall(r'\b\w+\b', text.lower())
+    word_count = len(words)
     
-    def _initialize_session_state(self):
-        """Initialize session state variables"""
-        if 'documents_processed' not in st.session_state:
-            st.session_state.documents_processed = False
-        if 'search_index' not in st.session_state:
-            st.session_state.search_index = None
+    # Count sentences
+    sentences = re.split(r'[.!?]+', text)
+    sentences = [s.strip() for s in sentences if s.strip()]
+    sentence_count = len(sentences)
     
-    def load_models(self):
-        """Try to load ML models with fallback"""
-        try:
-            from sentence_transformers import SentenceTransformer
-            self.model = SentenceTransformer('all-MiniLM-L6-v2')
-            return True
-        except Exception as e:
-            st.warning(f"AI model not available: {e}")
-            self.model = None
-            return False
+    # Find common keywords
+    word_freq = Counter(words)
+    common_words = word_freq.most_common(10)
     
-    def extract_text_from_pdf(self, file):
-        """Extract text from PDF file"""
-        try:
-            pdf_reader = PyPDF2.PdfReader(file)
-            text = ""
-            for page in pdf_reader.pages:
-                text += page.extract_text() or ""
-            return text
-        except Exception as e:
-            st.error(f"Error reading PDF: {e}")
-            return ""
+    return {
+        'word_count': word_count,
+        'sentence_count': sentence_count,
+        'common_words': common_words,
+        'sentences': sentences
+    }
+
+def process_uploaded_files(uploaded_files):
+    """Process uploaded files and extract text"""
+    documents = []
+    metadata = []
     
-    def extract_text_from_docx(self, file):
-        """Extract text from DOCX file"""
-        try:
-            doc = Document(file)
-            text = ""
-            for paragraph in doc.paragraphs:
-                if paragraph.text.strip():
-                    text += paragraph.text + "\n"
-            return text
-        except Exception as e:
-            st.error(f"Error reading DOCX: {e}")
-            return ""
-    
-    def simple_text_analysis(self, text):
-        """Perform basic text analysis"""
-        # Count words
-        words = re.findall(r'\b\w+\b', text.lower())
-        word_count = len(words)
+    for uploaded_file in uploaded_files:
+        # Extract text based on file type
+        text = ""
+        if uploaded_file.name.lower().endswith('.pdf'):
+            text = extract_text_from_pdf(uploaded_file)
+        elif uploaded_file.name.lower().endswith('.docx'):
+            text = extract_text_from_docx(uploaded_file)
+        else:
+            continue
         
-        # Count sentences
-        sentences = re.split(r'[.!?]+', text)
-        sentences = [s.strip() for s in sentences if s.strip()]
-        sentence_count = len(sentences)
-        
-        # Find common keywords
-        word_freq = Counter(words)
-        common_words = word_freq.most_common(10)
-        
-        return {
-            'word_count': word_count,
-            'sentence_count': sentence_count,
-            'common_words': common_words,
-            'sentences': sentences
-        }
-    
-    def process_uploaded_files(self, uploaded_files):
-        """Process uploaded files and extract text"""
-        documents = []
-        metadata = []
-        
-        for uploaded_file in uploaded_files:
-            # Extract text based on file type
-            text = ""
-            if uploaded_file.name.lower().endswith('.pdf'):
-                text = self.extract_text_from_pdf(uploaded_file)
-            elif uploaded_file.name.lower().endswith('.docx'):
-                text = self.extract_text_from_docx(uploaded_file)
-            else:
-                continue
+        if text and text.strip():
+            # Perform basic text analysis
+            analysis = simple_text_analysis(text)
             
-            if text and text.strip():
-                # Perform basic text analysis
-                analysis = self.simple_text_analysis(text)
-                
-                metadata.append({
-                    'filename': uploaded_file.name,
-                    'upload_date': datetime.now(),
-                    'file_size': len(uploaded_file.getvalue()),
-                    'word_count': analysis['word_count'],
-                    'sentence_count': analysis['sentence_count'],
-                    'common_words': analysis['common_words'],
-                    'sentences': analysis['sentences'],
-                    'content': text
+            metadata.append({
+                'filename': uploaded_file.name,
+                'upload_date': datetime.now(),
+                'file_size': len(uploaded_file.getvalue()),
+                'word_count': analysis['word_count'],
+                'sentence_count': analysis['sentence_count'],
+                'common_words': analysis['common_words'],
+                'sentences': analysis['sentences'],
+                'content': text
+            })
+            documents.append(text)
+    
+    return documents, metadata
+
+def keyword_search(query, documents, metadata, top_k=5):
+    """Keyword search with basic matching"""
+    if not documents:
+        return []
+    
+    results = []
+    query_lower = query.lower()
+    query_words = [word for word in query_lower.split() if len(word) > 2]  # Filter short words
+    
+    for i, (doc, meta) in enumerate(zip(documents, metadata)):
+        doc_lower = doc.lower()
+        match_score = 0
+        keyword_sentences = []
+        
+        # Check each sentence for matches
+        for j, sentence in enumerate(meta['sentences']):
+            sentence_lower = sentence.lower()
+            sentence_score = 0
+            highlighted_sentence = sentence
+            
+            for word in query_words:
+                if word in sentence_lower:
+                    sentence_score += 1
+                    # Highlight the word
+                    highlighted_sentence = re.sub(
+                        f'({re.escape(word)})', 
+                        r'<span class="highlight">\1</span>', 
+                        highlighted_sentence, 
+                        flags=re.IGNORECASE
+                    )
+            
+            if sentence_score > 0:
+                keyword_sentences.append({
+                    'sentence': highlighted_sentence,
+                    'similarity': sentence_score / len(query_words),
+                    'position': j
                 })
-                documents.append(text)
+                match_score += sentence_score
         
-        return documents, metadata
+        if match_score > 0:
+            normalized_score = min(match_score / (len(query_words) * 3), 1.0)
+            results.append({
+                'document': doc,
+                'metadata': meta,
+                'score': normalized_score,
+                'matches': keyword_sentences[:5]  # Limit matches
+            })
     
-    def keyword_search(self, query, top_k=5):
-        """Keyword search with basic matching"""
-        if not self.documents:
-            return []
-        
-        results = []
-        query_lower = query.lower()
-        query_words = query_lower.split()
-        
-        for i, (doc, meta) in enumerate(zip(self.documents, self.metadata)):
-            doc_lower = doc.lower()
-            match_score = 0
-            keyword_sentences = []
-            
-            # Check each sentence for matches
-            for j, sentence in enumerate(meta['sentences']):
-                sentence_lower = sentence.lower()
-                sentence_score = 0
-                highlighted_sentence = sentence
-                
-                for word in query_words:
-                    if word in sentence_lower:
-                        sentence_score += 1
-                        # Highlight the word
-                        highlighted_sentence = re.sub(
-                            f'({re.escape(word)})', 
-                            r'<span class="highlight">\1</span>', 
-                            highlighted_sentence, 
-                            flags=re.IGNORECASE
-                        )
-                
-                if sentence_score > 0:
-                    keyword_sentences.append({
-                        'sentence': highlighted_sentence,
-                        'similarity': sentence_score / len(query_words),
-                        'position': j
-                    })
-                    match_score += sentence_score
-            
-            if match_score > 0:
-                normalized_score = min(match_score / (len(query_words) * 5), 1.0)
-                results.append({
-                    'document': doc,
-                    'metadata': meta,
-                    'score': normalized_score,
-                    'matches': keyword_sentences[:3]  # Limit matches
-                })
-        
-        return sorted(results, key=lambda x: x['score'], reverse=True)[:top_k]
+    return sorted(results, key=lambda x: x['score'], reverse=True)[:top_k]
 
 def main():
-    # Initialize search engine
-    if 'search_engine' not in st.session_state:
-        st.session_state.search_engine = MeetingMinutesSearch()
-    
-    search_engine = st.session_state.search_engine
+    # Initialize data in session state if not exists
+    if 'documents' not in st.session_state:
+        st.session_state.documents = []
+    if 'metadata' not in st.session_state:
+        st.session_state.metadata = []
     
     # Sidebar navigation
     with st.sidebar:
         st.markdown("""
         <div style="text-align: center;">
             <h1>🔍 MeetSearch Pro</h1>
-            <p>AI-Powered Meeting Minutes Search</p>
+            <p>Smart Meeting Minutes Search</p>
         </div>
         """, unsafe_allow_html=True)
         
-        # Simple navigation without external dependencies
+        # Simple navigation
         page = st.radio(
-            "Navigation",
-            ["Dashboard", "Upload Documents", "Search", "Analytics"],
+            "Navigate to:",
+            ["🏠 Dashboard", "📤 Upload", "🔍 Search", "📊 Analytics"],
             index=0
         )
         
         st.markdown("---")
         st.markdown("### Quick Stats")
-        if search_engine.metadata:
-            st.info(f"📊 Documents: {len(search_engine.metadata)}")
-            total_words = sum(meta['word_count'] for meta in search_engine.metadata)
+        if st.session_state.metadata:
+            st.info(f"📊 Documents: {len(st.session_state.metadata)}")
+            total_words = sum(meta['word_count'] for meta in st.session_state.metadata)
             st.success(f"📝 Total Words: {total_words:,}")
+        else:
+            st.info("📊 Documents: 0")
+            st.success("📝 Total Words: 0")
     
-    # Page routing
-    if page == "Dashboard":
-        show_dashboard(search_engine)
-    elif page == "Upload Documents":
-        show_upload_section(search_engine)
-    elif page == "Search":
-        show_search_section(search_engine)
-    elif page == "Analytics":
-        show_analytics_section(search_engine)
+    # Remove the emoji from page name for comparison
+    current_page = page[2:] if page.startswith("🏠") else page[3:]
+    
+    if current_page == "Dashboard":
+        show_dashboard()
+    elif current_page == "Upload":
+        show_upload_section()
+    elif current_page == "Search":
+        show_search_section()
+    elif current_page == "Analytics":
+        show_analytics_section()
 
-def show_dashboard(search_engine):
+def show_dashboard():
     """Display the main dashboard"""
     st.markdown('<div class="main-header">🔍 MeetSearch Pro</div>', unsafe_allow_html=True)
     
@@ -258,7 +236,7 @@ def show_dashboard(search_engine):
         st.markdown("""
         <div class="card">
             <h3>🚀 Smart Search</h3>
-            <p>Find exactly what you're looking for in your meeting minutes.</p>
+            <p>Find exactly what you need in your meeting minutes with advanced keyword search and highlighting.</p>
         </div>
         """, unsafe_allow_html=True)
     
@@ -266,7 +244,7 @@ def show_dashboard(search_engine):
         st.markdown("""
         <div class="card">
             <h3>📊 Document Insights</h3>
-            <p>Gain valuable insights from your meeting data.</p>
+            <p>Get valuable analytics and insights from your meeting documents.</p>
         </div>
         """, unsafe_allow_html=True)
     
@@ -274,39 +252,41 @@ def show_dashboard(search_engine):
         st.markdown("""
         <div class="card">
             <h3>💾 Multi-Format</h3>
-            <p>Support for PDF and Word documents.</p>
+            <p>Upload PDF and Word documents individually or in ZIP folders.</p>
         </div>
         """, unsafe_allow_html=True)
     
     # Quick start guide
     st.markdown("---")
-    st.markdown("## 🚀 Get Started in 3 Steps")
+    st.markdown("## 🚀 Get Started in 3 Simple Steps")
     
     steps = [
-        "1. **Upload** your meeting minutes (PDF or Word documents)",
-        "2. **Search** for specific terms or phrases", 
-        "3. **View** highlighted results with context"
+        "1. **Go to the Upload section** and add your meeting minutes (PDF or Word documents)",
+        "2. **Navigate to Search** to find specific terms or phrases across all documents", 
+        "3. **View highlighted results** with context and relevance scores"
     ]
     
     for step in steps:
         st.markdown(step)
     
-    # Feature highlights
+    # Current status
     st.markdown("---")
-    st.markdown("## ✨ Key Features")
+    st.markdown("## 📈 Current Status")
     
-    features = [
-        "**Keyword Search**: Find exact matches with highlighting",
-        "**Multi-Document Support**: Search across all uploaded files",
-        "**Document Analytics**: View statistics and insights",
-        "**Modern Interface**: Clean, professional design",
-        "**Easy Upload**: Drag and drop or select multiple files"
-    ]
-    
-    for feature in features:
-        st.markdown(f"✅ {feature}")
+    if st.session_state.metadata:
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Documents Loaded", len(st.session_state.metadata))
+        with col2:
+            total_words = sum(meta['word_count'] for meta in st.session_state.metadata)
+            st.metric("Total Words", f"{total_words:,}")
+        with col3:
+            avg_words = total_words // len(st.session_state.metadata) if st.session_state.metadata else 0
+            st.metric("Average per Doc", f"{avg_words:,}")
+    else:
+        st.info("No documents uploaded yet. Go to the Upload section to get started!")
 
-def show_upload_section(search_engine):
+def show_upload_section():
     """Handle document uploads"""
     st.markdown("## 📤 Upload Meeting Minutes")
     
@@ -328,7 +308,7 @@ def show_upload_section(search_engine):
         )
     else:
         zip_file = st.file_uploader(
-            "Upload ZIP folder",
+            "Upload ZIP folder containing documents",
             type=['zip'],
             help="ZIP file containing PDF or Word documents"
         )
@@ -340,68 +320,73 @@ def show_upload_section(search_engine):
                         with z.open(file_info.filename) as file:
                             file_data = file.read()
                             # Create a file-like object
-                            from io import BytesIO
-                            file_obj = BytesIO(file_data)
+                            file_obj = io.BytesIO(file_data)
                             file_obj.name = file_info.filename
                             uploaded_files.append(file_obj)
     
-    if uploaded_files and st.button("Process Documents", type="primary"):
-        with st.spinner("Processing documents..."):
-            documents, metadata = search_engine.process_uploaded_files(uploaded_files)
-            
-            if documents:
-                search_engine.documents = documents
-                search_engine.metadata = metadata
-                st.session_state.documents_processed = True
+    if uploaded_files:
+        if st.button("Process Documents", type="primary"):
+            with st.spinner("Processing documents... This may take a moment."):
+                documents, metadata = process_uploaded_files(uploaded_files)
                 
-                st.success(f"✅ Successfully processed {len(documents)} documents!")
-                
-                # Show summary
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Documents Processed", len(documents))
-                with col2:
-                    total_words = sum(meta['word_count'] for meta in metadata)
-                    st.metric("Total Words", f"{total_words:,}")
-                with col3:
-                    avg_words = total_words // len(metadata) if metadata else 0
-                    st.metric("Avg Words/Doc", f"{avg_words:,}")
-                
-                # Show document preview
-                st.markdown("### 📋 Document Preview")
-                for i, meta in enumerate(metadata[:3]):  # Show first 3
-                    with st.expander(f"📄 {meta['filename']} ({meta['word_count']} words)"):
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.write(f"**Size:** {meta['file_size']:,} bytes")
-                            st.write(f"**Sentences:** {meta['sentence_count']}")
-                        with col2:
-                            st.write(f"**Uploaded:** {meta['upload_date'].strftime('%Y-%m-%d %H:%M')}")
-                        
-                        st.write("**Preview:**")
-                        preview = meta['content'][:300] + "..." if len(meta['content']) > 300 else meta['content']
-                        st.text(preview)
+                if documents:
+                    st.session_state.documents = documents
+                    st.session_state.metadata = metadata
+                    
+                    st.success(f"✅ Successfully processed {len(documents)} documents!")
+                    
+                    # Show summary
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Documents Processed", len(documents))
+                    with col2:
+                        total_words = sum(meta['word_count'] for meta in metadata)
+                        st.metric("Total Words", f"{total_words:,}")
+                    with col3:
+                        avg_words = total_words // len(metadata) if metadata else 0
+                        st.metric("Avg Words/Doc", f"{avg_words:,}")
+                    
+                    # Show document preview
+                    st.markdown("### 📋 Document Preview")
+                    for i, meta in enumerate(metadata[:3]):  # Show first 3
+                        with st.expander(f"📄 {meta['filename']} ({meta['word_count']} words)"):
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.write(f"**Size:** {meta['file_size']:,} bytes")
+                                st.write(f"**Sentences:** {meta['sentence_count']}")
+                            with col2:
+                                st.write(f"**Uploaded:** {meta['upload_date'].strftime('%Y-%m-%d %H:%M')}")
+                            
+                            st.write("**Preview:**")
+                            preview = meta['content'][:400] + "..." if len(meta['content']) > 400 else meta['content']
+                            st.text(preview)
+                else:
+                    st.error("No valid documents could be processed. Please check your files.")
 
-def show_search_section(search_engine):
+def show_search_section():
     """Handle search functionality"""
     st.markdown("## 🔍 Search Meeting Minutes")
     
-    if not search_engine.documents:
+    if not st.session_state.documents:
         st.warning("📁 Please upload documents first in the Upload section.")
-        st.info("Go to 'Upload Documents' to add your meeting minutes.")
+        st.info("Go to 'Upload' to add your meeting minutes.")
         return
     
     # Search interface
     query = st.text_input(
         "Enter your search query:",
-        placeholder="e.g., project timeline, budget, action items, decisions..."
+        placeholder="e.g., project timeline, budget discussion, action items, decisions..."
     )
     
-    top_k = st.selectbox("Number of results:", [5, 10, 15])
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        top_k = st.selectbox("Number of results:", [5, 10, 15])
+    with col2:
+        st.info(f"Searching in {len(st.session_state.documents)} documents")
     
     if query:
         with st.spinner("Searching through documents..."):
-            results = search_engine.keyword_search(query, top_k=top_k)
+            results = keyword_search(query, st.session_state.documents, st.session_state.metadata, top_k=top_k)
             
             if results:
                 st.markdown(f"### 📊 Found {len(results)} matches")
@@ -411,7 +396,7 @@ def show_search_section(search_engine):
                     st.markdown(f"""
                     <div class="card">
                         <h3>📄 {result['metadata']['filename']}</h3>
-                        <p><span class="match-score">Relevance: {result['score']:.2f}</span> • 
+                        <p><span class="match-score">Relevance Score: {result['score']:.2f}</span> • 
                         {result['metadata']['word_count']} words • 
                         {result['metadata']['sentence_count']} sentences</p>
                     </div>
@@ -429,24 +414,24 @@ def show_search_section(search_engine):
                             """, unsafe_allow_html=True)
                     
                     # Show full document on expand
-                    with st.expander("View full document content"):
+                    with st.expander("📖 View full document content"):
                         st.text_area(
-                            "Document content:",
+                            f"Content of {result['metadata']['filename']}",
                             result['document'],
-                            height=150,
+                            height=200,
                             key=f"doc_{i}"
                         )
                     
                     st.markdown("---")
             else:
                 st.warning("No matches found. Try different search terms.")
-                st.info("💡 Tip: Use specific keywords or try shorter phrases.")
+                st.info("💡 Tip: Use specific keywords or try shorter search phrases.")
 
-def show_analytics_section(search_engine):
+def show_analytics_section():
     """Show analytics and insights"""
     st.markdown("## 📊 Analytics & Insights")
     
-    if not search_engine.metadata:
+    if not st.session_state.metadata:
         st.warning("Upload documents to see analytics.")
         return
     
@@ -455,37 +440,39 @@ def show_analytics_section(search_engine):
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("Total Documents", len(search_engine.metadata))
+        st.metric("Total Documents", len(st.session_state.metadata))
     
     with col2:
-        total_words = sum(meta['word_count'] for meta in search_engine.metadata)
+        total_words = sum(meta['word_count'] for meta in st.session_state.metadata)
         st.metric("Total Words", f"{total_words:,}")
     
     with col3:
-        avg_words = total_words // len(search_engine.metadata)
+        avg_words = total_words // len(st.session_state.metadata)
         st.metric("Avg Words/Doc", f"{avg_words:,}")
     
     with col4:
-        total_size = sum(meta['file_size'] for meta in search_engine.metadata)
+        total_size = sum(meta['file_size'] for meta in st.session_state.metadata)
         st.metric("Total Size", f"{total_size / 1024:.1f} KB")
     
     # Common words analysis
     st.markdown("### 🔤 Most Common Words")
     all_words = []
-    for meta in search_engine.metadata:
+    for meta in st.session_state.metadata:
         all_words.extend([word for word, count in meta['common_words']])
     
     if all_words:
         word_freq = Counter(all_words)
         common_words = word_freq.most_common(15)
         
-        # Display as a table
-        words_df = pd.DataFrame(common_words, columns=['Word', 'Frequency'])
-        st.dataframe(words_df, use_container_width=True)
+        # Display as columns for better readability
+        cols = st.columns(3)
+        for i, (word, count) in enumerate(common_words):
+            with cols[i % 3]:
+                st.metric(f"Word {i+1}", f"{word} ({count})")
     
     # Document list
     st.markdown("### 📋 Document Details")
-    for meta in search_engine.metadata:
+    for meta in st.session_state.metadata:
         with st.expander(f"{meta['filename']} ({meta['word_count']} words)"):
             col1, col2 = st.columns(2)
             with col1:
