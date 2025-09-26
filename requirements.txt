@@ -1,33 +1,7 @@
-# Core UI
 gradio==3.50.2
-gradio-client==0.6.1
-websockets==10.4
-
-# ML / Data
-torch>=2.0.0
-pandas>=2.3.2
-scikit-learn>=1.2.0
-numpy>=1.26.0
-
-# PDF / Word processing
-PyPDF2>=3.0.0
-python-docx>=0.8.11
-openpyxl>=3.0.10
-
-# Fuzzy text matching
-fuzzywuzzy>=0.18.0
-rapidfuzz>=2.16.1
-
-# File / OS utilities
-requests>=2.31.0
-tqdm>=4.66.1
-python-magic>=0.6.4
-
-# Optional audio / video / image processing
-opencv-python-headless>=4.8.1.78
-ffmpeg-python>=0.3.1
-Pillow>=10.0.0
-
-# Optional NLP
-transformers>=4.46.0
-sentence-transformers>=2.2.2
+gradio-client==0.4.3
+websockets==11.1.0
+numpy==1.26.5
+pandas==2.2.4
+requests==2.32.0
+Pillow==10.0.1
