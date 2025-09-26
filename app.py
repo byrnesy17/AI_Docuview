@@ -1,131 +1,167 @@
-import gradio as gr
 import os
+import tempfile
 import zipfile
+from pathlib import Path
+import PyPDF2
 import docx
-from PyPDF2 import PdfReader
+import gradio as gr
 
-# -------------------------------
-# File Extractors
-# -------------------------------
-def extract_text_from_pdf(file_path):
-    text = ""
+from sentence_transformers import SentenceTransformer, util
+
+# -----------------------------
+# AI Model for Embeddings
+# -----------------------------
+MODEL = SentenceTransformer("all-MiniLM-L6-v2")
+
+# -----------------------------
+# File Parsing
+# -----------------------------
+def extract_text_from_pdf(path):
+    text = []
     try:
-        reader = PdfReader(file_path)
-        for page in reader.pages:
-            text += page.extract_text() or ""
+        with open(path, "rb") as f:
+            reader = PyPDF2.PdfReader(f)
+            for page in reader.pages:
+                txt = page.extract_text() or ""
+                text.append(txt)
     except Exception as e:
-        text += f"\n[PDF READ ERROR: {file_path} | {e}]"
-    return text
+        text.append(f"[PDF parse error: {e}]")
+    return "\n".join(text)
 
-def extract_text_from_docx(file_path):
-    text = ""
+
+def extract_text_from_docx(path):
     try:
-        doc = docx.Document(file_path)
-        for para in doc.paragraphs:
-            text += para.text + "\n"
+        doc = docx.Document(path)
+        return "\n".join([p.text for p in doc.paragraphs])
     except Exception as e:
-        text += f"\n[DOCX READ ERROR: {file_path} | {e}]"
-    return text
+        return f"[DOCX parse error: {e}]"
 
-def extract_text_from_txt(file_path):
-    text = ""
+
+def process_zip(path, tmpdir):
+    paths = []
     try:
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            text = f.read()
+        with zipfile.ZipFile(path, "r") as z:
+            z.extractall(tmpdir)
+            for root, _, files in os.walk(tmpdir):
+                for fname in files:
+                    paths.append(os.path.join(root, fname))
     except Exception as e:
-        text += f"\n[TXT READ ERROR: {file_path} | {e}]"
-    return text
+        print("Zip error:", e)
+    return paths
 
-def extract_text_from_zip(file_path):
-    text = ""
-    try:
-        with zipfile.ZipFile(file_path, "r") as z:
-            for name in z.namelist():
-                if name.endswith(".pdf"):
-                    with z.open(name) as f:
-                        tmp_path = f"/tmp/{os.path.basename(name)}"
-                        with open(tmp_path, "wb") as tmpf:
-                            tmpf.write(f.read())
-                        text += f"\n--- {name} ---\n"
-                        text += extract_text_from_pdf(tmp_path)
-                elif name.endswith(".docx"):
-                    with z.open(name) as f:
-                        tmp_path = f"/tmp/{os.path.basename(name)}"
-                        with open(tmp_path, "wb") as tmpf:
-                            tmpf.write(f.read())
-                        text += f"\n--- {name} ---\n"
-                        text += extract_text_from_docx(tmp_path)
-                elif name.endswith(".txt"):
-                    with z.open(name) as f:
-                        tmp_path = f"/tmp/{os.path.basename(name)}"
-                        with open(tmp_path, "wb") as tmpf:
-                            tmpf.write(f.read())
-                        text += f"\n--- {name} ---\n"
-                        text += extract_text_from_txt(tmp_path)
-    except Exception as e:
-        text += f"\n[ZIP READ ERROR: {file_path} | {e}]"
-    return text
 
-def load_documents(files):
-    all_texts = {}
-    for file_path in files:
-        if file_path.endswith(".pdf"):
-            all_texts[file_path] = extract_text_from_pdf(file_path)
-        elif file_path.endswith(".docx"):
-            all_texts[file_path] = extract_text_from_docx(file_path)
-        elif file_path.endswith(".txt"):
-            all_texts[file_path] = extract_text_from_txt(file_path)
-        elif file_path.endswith(".zip"):
-            all_texts[file_path] = extract_text_from_zip(file_path)
+# -----------------------------
+# Global Store
+# -----------------------------
+CHUNKS = []  # list of dicts: {doc, text, embedding}
+
+
+def upload_files(files):
+    """Extract, chunk, and embed documents"""
+    global CHUNKS
+    CHUNKS.clear()
+
+    tmpdir = tempfile.mkdtemp(prefix="uploads_")
+
+    file_list = files if isinstance(files, list) else [files]
+    for f in file_list:
+        if not f:
+            continue
+        path = getattr(f, "name", None) or (f.get("name") if isinstance(f, dict) else None)
+        if not path:
+            continue
+
+        if path.lower().endswith(".pdf"):
+            text = extract_text_from_pdf(path)
+        elif path.lower().endswith(".docx"):
+            text = extract_text_from_docx(path)
+        elif path.lower().endswith(".zip"):
+            extracted = process_zip(path, tmpdir)
+            for ep in extracted:
+                if ep.lower().endswith(".pdf"):
+                    text = extract_text_from_pdf(ep)
+                    _chunk_and_embed(text, Path(ep).name)
+                elif ep.lower().endswith(".docx"):
+                    text = extract_text_from_docx(ep)
+                    _chunk_and_embed(text, Path(ep).name)
+            continue
         else:
-            all_texts[file_path] = f"[Unsupported file type: {file_path}]"
-    return all_texts
+            continue
 
-# -------------------------------
-# Simple AI Search Simulation
-# -------------------------------
-def search_documents(files, query):
-    if not files or not query:
-        return "No files uploaded or query is empty."
-    
-    docs_text = load_documents(files)
+        _chunk_and_embed(text, Path(path).name)
+
+    return f"✅ Uploaded and embedded {len(CHUNKS)} text chunks."
+
+
+def _chunk_and_embed(text, docname, chunk_size=400):
+    """Split text into chunks and embed them"""
+    global CHUNKS
+    lines = text.split("\n")
+    buf = []
+    for line in lines:
+        if not line.strip():
+            continue
+        buf.append(line.strip())
+        if sum(len(x) for x in buf) > chunk_size:
+            chunk = " ".join(buf)
+            emb = MODEL.encode(chunk, convert_to_tensor=True)
+            CHUNKS.append({"doc": docname, "text": chunk, "embedding": emb})
+            buf = []
+    if buf:
+        chunk = " ".join(buf)
+        emb = MODEL.encode(chunk, convert_to_tensor=True)
+        CHUNKS.append({"doc": docname, "text": chunk, "embedding": emb})
+
+
+# -----------------------------
+# AI Search
+# -----------------------------
+def search_docs(query, top_k=5):
+    global CHUNKS
+    if not CHUNKS:
+        return [gr.Textbox.update(value="⚠️ No documents uploaded yet.")]
+
+    query_emb = MODEL.encode(query, convert_to_tensor=True)
+    scores = [(util.cos_sim(query_emb, c["embedding"]).item(), c) for c in CHUNKS]
+    scores = sorted(scores, key=lambda x: x[0], reverse=True)[:top_k]
+
     results = []
-    
-    for file_name, content in docs_text.items():
-        score = 0.9 if query.lower() in content.lower() else 0.5
-        snippet = ""
-        if query.lower() in content.lower():
-            idx = content.lower().find(query.lower())
-            start = max(idx - 50, 0)
-            end = min(idx + 50, len(content))
-            snippet = content[start:end].replace(query, f"**{query}**")
-        results.append(f"File: {file_name}\nScore: {score}\nSnippet: {snippet}\n")
-    
-    return "\n\n".join(results)
-
-# -------------------------------
-# Gradio Interface
-# -------------------------------
-with gr.Blocks() as demo:
-    gr.Markdown("<h1 style='text-align:center'>AI Document Search</h1><p style='text-align:center'>Upload PDF, DOCX, TXT, or ZIP files and search them.</p>")
-    
-    with gr.Row():
-        with gr.Column():
-            upload_files = gr.File(
-                file_types=[".pdf", ".docx", ".txt", ".zip"],
-                file_types_count="multiple",   # ✅ correct for multiple files
-                label="Upload Documents"
+    for score, chunk in scores:
+        snippet = chunk["text"]
+        results.append(
+            gr.Textbox.update(
+                value=f"📄 {chunk['doc']} (score: {score:.2f})\n\n{snippet}\n",
+                label="Match"
             )
-            query_input = gr.Textbox(label="Search Query", placeholder="Type a keyword or phrase...")
-            search_btn = gr.Button("Search")
-        
-        with gr.Column():
-            output_box = gr.Textbox(label="Search Results", lines=20)
-    
-    search_btn.click(
-        search_documents,
-        inputs=[upload_files, query_input],
-        outputs=[output_box]
-    )
+        )
+    return results
 
-demo.launch()
+
+# -----------------------------
+# Gradio UI
+# -----------------------------
+with gr.Blocks(css=".gr-textbox {font-family: Arial; font-size: 14px;}") as demo:
+    gr.Markdown("## 🤖 AI-Powered Meeting Minutes Search\nUpload PDFs, Word docs, or ZIP files, then search semantically for key topics.")
+
+    with gr.Row():
+        upload_box = gr.File(
+            label="Upload Documents (PDF, DOCX, ZIP)",
+            file_types=[".pdf", ".docx", ".zip"],
+            type="file",
+            file_types="file"
+        )
+        upload_btn = gr.Button("Process Uploads", variant="primary")
+
+    status = gr.Textbox(label="Status", interactive=False)
+
+    with gr.Row():
+        query = gr.Textbox(label="Search term", placeholder="e.g. animal")
+        search_btn = gr.Button("Search", variant="primary")
+
+    results = gr.Group()
+
+    upload_btn.click(upload_files, inputs=upload_box, outputs=status)
+    search_btn.click(search_docs, inputs=query, outputs=results)
+
+if __name__ == "__main__":
+    demo.launch()
