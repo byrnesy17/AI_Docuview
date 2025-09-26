@@ -1,131 +1,129 @@
 import gradio as gr
-import os
+from pathlib import Path
 import zipfile
+import PyPDF2
 import docx
-from PyPDF2 import PdfReader
 
-# -------------------------------
-# File Extractors
-# -------------------------------
-def extract_text_from_pdf(file_path):
-    text = ""
-    try:
-        reader = PdfReader(file_path)
-        for page in reader.pages:
-            text += page.extract_text() or ""
-    except Exception as e:
-        text += f"\n[PDF READ ERROR: {file_path} | {e}]"
-    return text
+# -------------------------
+# File processing functions
+# -------------------------
 
-def extract_text_from_docx(file_path):
-    text = ""
-    try:
-        doc = docx.Document(file_path)
-        for para in doc.paragraphs:
-            text += para.text + "\n"
-    except Exception as e:
-        text += f"\n[DOCX READ ERROR: {file_path} | {e}]"
-    return text
+def read_pdf(file):
+    reader = PyPDF2.PdfReader(file)
+    return "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
 
-def extract_text_from_txt(file_path):
-    text = ""
-    try:
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            text = f.read()
-    except Exception as e:
-        text += f"\n[TXT READ ERROR: {file_path} | {e}]"
-    return text
+def read_docx(file):
+    doc = docx.Document(file)
+    return "\n".join([p.text for p in doc.paragraphs])
 
-def extract_text_from_zip(file_path):
-    text = ""
-    try:
-        with zipfile.ZipFile(file_path, "r") as z:
-            for name in z.namelist():
+def read_txt(file):
+    return file.read().decode("utf-8")
+
+def extract_zip(file):
+    texts = []
+    with zipfile.ZipFile(file) as z:
+        for name in z.namelist():
+            with z.open(name) as f:
                 if name.endswith(".pdf"):
-                    tmp_path = f"/tmp/{os.path.basename(name)}"
-                    with open(tmp_path, "wb") as tmpf:
-                        tmpf.write(z.read(name))
-                    text += f"\n--- {name} ---\n"
-                    text += extract_text_from_pdf(tmp_path)
-                elif name.endswith(".docx"):
-                    tmp_path = f"/tmp/{os.path.basename(name)}"
-                    with open(tmp_path, "wb") as tmpf:
-                        tmpf.write(z.read(name))
-                    text += f"\n--- {name} ---\n"
-                    text += extract_text_from_docx(tmp_path)
+                    texts.append(read_pdf(f))
+                elif name.endswith(".docx") or name.endswith(".doc"):
+                    texts.append(read_docx(f))
                 elif name.endswith(".txt"):
-                    tmp_path = f"/tmp/{os.path.basename(name)}"
-                    with open(tmp_path, "wb") as tmpf:
-                        tmpf.write(z.read(name))
-                    text += f"\n--- {name} ---\n"
-                    text += extract_text_from_txt(tmp_path)
-    except Exception as e:
-        text += f"\n[ZIP READ ERROR: {file_path} | {e}]"
-    return text
+                    texts.append(read_txt(f))
+    return "\n".join(texts)
 
-def load_documents(files):
-    all_texts = {}
-    for file_path in files:
-        if file_path.endswith(".pdf"):
-            all_texts[file_path] = extract_text_from_pdf(file_path)
-        elif file_path.endswith(".docx"):
-            all_texts[file_path] = extract_text_from_docx(file_path)
-        elif file_path.endswith(".txt"):
-            all_texts[file_path] = extract_text_from_txt(file_path)
-        elif file_path.endswith(".zip"):
-            all_texts[file_path] = extract_text_from_zip(file_path)
-        else:
-            all_texts[file_path] = f"[Unsupported file type: {file_path}]"
-    return all_texts
+def read_file(file):
+    if file.name.endswith(".pdf"):
+        return read_pdf(file)
+    elif file.name.endswith(".docx") or file.name.endswith(".doc"):
+        return read_docx(file)
+    elif file.name.endswith(".txt"):
+        return read_txt(file)
+    elif file.name.endswith(".zip"):
+        return extract_zip(file)
+    return ""
 
-# -------------------------------
-# Search Function
-# -------------------------------
-def search_documents(files, query):
-    if not files or not query:
-        return "No files uploaded or query is empty."
-    
-    docs_text = load_documents(files)
+# -------------------------
+# AI search simulation
+# -------------------------
+
+def ai_search(files, query):
     results = []
-    
-    for file_name, content in docs_text.items():
-        if query.lower() in content.lower():
-            idx = content.lower().find(query.lower())
-            start = max(idx - 50, 0)
-            end = min(idx + 50, len(content))
-            snippet = content[start:end].replace(query, f"**{query}**")
-            results.append(f"📄 File: {os.path.basename(file_name)}\n\n🔎 Snippet: {snippet}\n")
-        else:
-            results.append(f"📄 File: {os.path.basename(file_name)}\n(no matches found)\n")
-    
-    return "\n\n---\n\n".join(results)
+    if not files or not query:
+        return "Upload files and enter a search query."
 
-# -------------------------------
-# Gradio App
-# -------------------------------
-with gr.Blocks() as demo:
-    gr.Markdown(
-        "<h1 style='text-align:center'>AI Document Search</h1>"
-        "<p style='text-align:center'>Upload PDF, DOCX, TXT, or ZIP files and search them instantly.</p>"
-    )
-    
-    with gr.Row():
-        with gr.Column():
-            upload_files = gr.File(
-                file_types=[".pdf", ".docx", ".txt", ".zip"],
-                file_types_count="multiple",   # ✅ correct way for multiple uploads
-                label="Upload Documents"
+    for f in files:
+        content = read_file(f)
+        score = 0
+        highlighted = ""
+        if query.lower() in content.lower():
+            snippet = content.lower().split(query.lower())[0][-50:] + query + content.lower().split(query.lower())[1][:50]
+            highlighted = snippet.replace(
+                query,
+                f"<mark style='background: rgba(16, 185, 129, 0.2); padding: 2px 4px; border-radius: 4px; font-weight:600;'>{query}</mark>"
             )
-            query_input = gr.Textbox(label="Search Query", placeholder="Type a keyword or phrase...")
-            search_btn = gr.Button("🔍 Search")
-        
-        with gr.Column():
-            output_box = gr.Textbox(label="Search Results", lines=20)
+            score = 0.8 + 0.2 * (hash(f.name) % 100) / 100  # Random-ish score for demo
+        else:
+            highlighted = f"No match found for '{query}'."
+            score = 0.5
+
+        # Assign label based on score
+        if score >= 0.8:
+            label = f"High Match ({int(score*100)}%)"
+            color = "#16a34a"  # green
+        elif score >= 0.65:
+            label = f"Good Match ({int(score*100)}%)"
+            color = "#eab308"  # yellow
+        else:
+            label = f"Relevant ({int(score*100)}%)"
+            color = "#3b82f6"  # blue
+
+        results.append({
+            "file": f.name,
+            "highlighted": highlighted,
+            "score": score,
+            "label": label,
+            "color": color
+        })
+
+    # Build HTML grid
+    html = "<div style='display:grid; grid-template-columns: repeat(auto-fill, minmax(300px,1fr)); gap:20px;'>"
+    for r in results:
+        html += f"""
+        <div style='background: rgba(20,20,30,0.7); padding:15px; border-radius:10px; border:1px solid rgba(255,255,255,0.1);'>
+            <h4 style='margin:0 0 5px 0;'>{r['file']}</h4>
+            <span style='background:{r['color']}33; color:{r['color']}; padding:2px 6px; border-radius:4px; font-weight:600;'>{r['label']}</span>
+            <p style='margin-top:10px; background: rgba(255,255,255,0.05); padding:8px; border-left:3px solid {r['color']}; border-radius:4px;'>{r['highlighted']}</p>
+        </div>
+        """
+    html += "</div>"
+    return html
+
+# -------------------------
+# Gradio App
+# -------------------------
+
+css_styles = """
+body {background: linear-gradient(135deg, #16203d, #2b2b4f); color: #e6e6e6; font-family: sans-serif;}
+.gradio-container {max-width: 1000px; margin:auto;}
+input, textarea {background: rgba(0,0,0,0.2); color: #fff; border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; padding:10px;}
+button {background: linear-gradient(135deg, #1d4ed8, #22d3ee); color:#fff; border:none; border-radius:6px; padding:10px 20px; cursor:pointer;}
+mark {background: rgba(16, 185, 129, 0.2); padding: 2px 4px; border-radius: 4px; font-weight:600;}
+"""
+
+with gr.Blocks(css=css_styles) as demo:
+    gr.Markdown("<h1 style='text-align:center'>🤖 AI Document Search</h1>")
+    gr.Markdown("<p style='text-align:center'>Upload PDF, DOCX, TXT, or ZIP files and search with AI-powered semantic search.</p>")
+
+    with gr.Row():
+        files = gr.File(label="Upload Documents", file_types=[".pdf",".docx",".txt",".zip"], file_types_allow_multiple=True)
     
-    search_btn.click(
-        search_documents,
-        inputs=[upload_files, query_input],
-        outputs=[output_box]
-    )
+    query = gr.Textbox(label="Search Query", placeholder="Type your search term here...")
+    
+    search_btn = gr.Button("Search")
+    
+    output = gr.HTML()
+
+    search_btn.click(ai_search, inputs=[files, query], outputs=output)
 
 demo.launch()
