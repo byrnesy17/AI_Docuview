@@ -2,6 +2,7 @@ import os
 import tempfile
 import zipfile
 from pathlib import Path
+
 import PyPDF2
 import docx
 import gradio as gr
@@ -11,6 +12,11 @@ from sentence_transformers import SentenceTransformer, util
 # AI Model
 # -----------------------------
 MODEL = SentenceTransformer("all-MiniLM-L6-v2")
+
+# -----------------------------
+# Global Store
+# -----------------------------
+CHUNKS = []  # list of dicts: {doc, text, embedding}
 
 # -----------------------------
 # File Parsing
@@ -47,47 +53,8 @@ def process_zip(path, tmpdir):
     return paths
 
 # -----------------------------
-# Global Store
+# Chunking & Embedding
 # -----------------------------
-CHUNKS = []  # list of dicts: {doc, text, embedding}
-
-# -----------------------------
-# Upload & Embed
-# -----------------------------
-def upload_files(files):
-    global CHUNKS
-    CHUNKS.clear()
-    tmpdir = tempfile.mkdtemp(prefix="uploads_")
-    file_list = files if isinstance(files, list) else [files]
-    
-    for f in file_list:
-        if not f:
-            continue
-        path = getattr(f, "name", None) or (f.get("name") if isinstance(f, dict) else None)
-        if not path:
-            continue
-
-        if path.lower().endswith(".pdf"):
-            text = extract_text_from_pdf(path)
-        elif path.lower().endswith(".docx"):
-            text = extract_text_from_docx(path)
-        elif path.lower().endswith(".zip"):
-            extracted = process_zip(path, tmpdir)
-            for ep in extracted:
-                if ep.lower().endswith(".pdf"):
-                    text = extract_text_from_pdf(ep)
-                    _chunk_and_embed(text, Path(ep).name)
-                elif ep.lower().endswith(".docx"):
-                    text = extract_text_from_docx(ep)
-                    _chunk_and_embed(text, Path(ep).name)
-            continue
-        else:
-            continue
-
-        _chunk_and_embed(text, Path(path).name)
-
-    return f"✅ Uploaded and embedded {len(CHUNKS)} text chunks."
-
 def _chunk_and_embed(text, docname, chunk_size=400):
     global CHUNKS
     lines = text.split("\n")
@@ -107,7 +74,44 @@ def _chunk_and_embed(text, docname, chunk_size=400):
         CHUNKS.append({"doc": docname, "text": chunk, "embedding": emb})
 
 # -----------------------------
-# AI Search
+# Upload & Process
+# -----------------------------
+def upload_files(files):
+    global CHUNKS
+    CHUNKS.clear()
+    tmpdir = tempfile.mkdtemp(prefix="uploads_")
+    file_list = files if isinstance(files, list) else [files]
+
+    total_chunks = 0
+
+    for f in file_list:
+        if not f:
+            continue
+        path = getattr(f, "name", None) or (f.get("name") if isinstance(f, dict) else None)
+        if not path:
+            continue
+
+        if path.lower().endswith(".pdf"):
+            text = extract_text_from_pdf(path)
+            _chunk_and_embed(text, Path(path).name)
+        elif path.lower().endswith(".docx"):
+            text = extract_text_from_docx(path)
+            _chunk_and_embed(text, Path(path).name)
+        elif path.lower().endswith(".zip"):
+            extracted = process_zip(path, tmpdir)
+            for ep in extracted:
+                if ep.lower().endswith(".pdf"):
+                    text = extract_text_from_pdf(ep)
+                    _chunk_and_embed(text, Path(ep).name)
+                elif ep.lower().endswith(".docx"):
+                    text = extract_text_from_docx(ep)
+                    _chunk_and_embed(text, Path(ep).name)
+        total_chunks = len(CHUNKS)
+
+    return f"✅ Uploaded and embedded {total_chunks} text chunks."
+
+# -----------------------------
+# AI Semantic Search
 # -----------------------------
 def search_docs(query, top_k=5):
     global CHUNKS
@@ -118,30 +122,25 @@ def search_docs(query, top_k=5):
     scores = [(util.cos_sim(query_emb, c["embedding"]).item(), c) for c in CHUNKS]
     scores = sorted(scores, key=lambda x: x[0], reverse=True)[:top_k]
 
-    results = []
+    cards = []
     for score, chunk in scores:
         snippet = chunk["text"]
-        card = gr.Card(
-            title=f"📄 {chunk['doc']} (score: {score:.2f})",
-            content=gr.Markdown(snippet[:300]+"..." if len(snippet)>300 else snippet)
-        )
-        # Add a button to view full chunk
-        card_button = gr.Button("View Full Chunk")
-        card_button.click(lambda t=snippet: t, outputs=gr.Textbox(label="Full Chunk", interactive=False))
-        results.append(card)
-    return results
+        cards.append(gr.Markdown(f"**📄 {chunk['doc']}** (score: {score:.2f})\n\n{snippet[:300]}{'...' if len(snippet)>300 else ''}"))
+
+    return cards
 
 # -----------------------------
 # Gradio UI
 # -----------------------------
 with gr.Blocks(css=".gr-textbox {font-family: Arial; font-size: 14px;}") as demo:
-    gr.Markdown("## 🤖 AI-Powered Meeting Minutes Search\nUpload PDFs, Word docs, or ZIP files, then search semantically for key topics.")
+    gr.Markdown("## 🤖 AI-Powered Meeting Minutes Search\nUpload PDFs, Word docs, or ZIP files, then search semantically for topics.")
 
     with gr.Row():
         upload_box = gr.File(
             label="Upload Documents (PDF, DOCX, ZIP)",
             file_types=[".pdf", ".docx", ".zip"],
-            type="file"
+            type="file",
+            file_types_count="multiple"
         )
         upload_btn = gr.Button("Process Uploads", variant="primary")
 
