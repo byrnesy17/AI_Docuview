@@ -5,11 +5,10 @@ from pathlib import Path
 import PyPDF2
 import docx
 import gradio as gr
-
 from sentence_transformers import SentenceTransformer, util
 
 # -----------------------------
-# AI Model for Embeddings
+# AI Model
 # -----------------------------
 MODEL = SentenceTransformer("all-MiniLM-L6-v2")
 
@@ -28,14 +27,12 @@ def extract_text_from_pdf(path):
         text.append(f"[PDF parse error: {e}]")
     return "\n".join(text)
 
-
 def extract_text_from_docx(path):
     try:
         doc = docx.Document(path)
         return "\n".join([p.text for p in doc.paragraphs])
     except Exception as e:
         return f"[DOCX parse error: {e}]"
-
 
 def process_zip(path, tmpdir):
     paths = []
@@ -49,21 +46,20 @@ def process_zip(path, tmpdir):
         print("Zip error:", e)
     return paths
 
-
 # -----------------------------
 # Global Store
 # -----------------------------
 CHUNKS = []  # list of dicts: {doc, text, embedding}
 
-
+# -----------------------------
+# Upload & Embed
+# -----------------------------
 def upload_files(files):
-    """Extract, chunk, and embed documents"""
     global CHUNKS
     CHUNKS.clear()
-
     tmpdir = tempfile.mkdtemp(prefix="uploads_")
-
     file_list = files if isinstance(files, list) else [files]
+    
     for f in file_list:
         if not f:
             continue
@@ -92,9 +88,7 @@ def upload_files(files):
 
     return f"✅ Uploaded and embedded {len(CHUNKS)} text chunks."
 
-
 def _chunk_and_embed(text, docname, chunk_size=400):
-    """Split text into chunks and embed them"""
     global CHUNKS
     lines = text.split("\n")
     buf = []
@@ -112,7 +106,6 @@ def _chunk_and_embed(text, docname, chunk_size=400):
         emb = MODEL.encode(chunk, convert_to_tensor=True)
         CHUNKS.append({"doc": docname, "text": chunk, "embedding": emb})
 
-
 # -----------------------------
 # AI Search
 # -----------------------------
@@ -128,14 +121,15 @@ def search_docs(query, top_k=5):
     results = []
     for score, chunk in scores:
         snippet = chunk["text"]
-        results.append(
-            gr.Textbox.update(
-                value=f"📄 {chunk['doc']} (score: {score:.2f})\n\n{snippet}\n",
-                label="Match"
-            )
+        card = gr.Card(
+            title=f"📄 {chunk['doc']} (score: {score:.2f})",
+            content=gr.Markdown(snippet[:300]+"..." if len(snippet)>300 else snippet)
         )
+        # Add a button to view full chunk
+        card_button = gr.Button("View Full Chunk")
+        card_button.click(lambda t=snippet: t, outputs=gr.Textbox(label="Full Chunk", interactive=False))
+        results.append(card)
     return results
-
 
 # -----------------------------
 # Gradio UI
@@ -147,8 +141,7 @@ with gr.Blocks(css=".gr-textbox {font-family: Arial; font-size: 14px;}") as demo
         upload_box = gr.File(
             label="Upload Documents (PDF, DOCX, ZIP)",
             file_types=[".pdf", ".docx", ".zip"],
-            type="file",
-            file_types="file"
+            type="file"
         )
         upload_btn = gr.Button("Process Uploads", variant="primary")
 
@@ -158,7 +151,7 @@ with gr.Blocks(css=".gr-textbox {font-family: Arial; font-size: 14px;}") as demo
         query = gr.Textbox(label="Search term", placeholder="e.g. animal")
         search_btn = gr.Button("Search", variant="primary")
 
-    results = gr.Group()
+    results = gr.Column()
 
     upload_btn.click(upload_files, inputs=upload_box, outputs=status)
     search_btn.click(search_docs, inputs=query, outputs=results)
