@@ -11,3 +11,4 @@ pytesseract
 Pillow
 sentence-transformers
 scikit-learn
+python-docx
