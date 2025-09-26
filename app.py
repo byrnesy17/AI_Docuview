@@ -1,118 +1,105 @@
 import streamlit as st
-import zipfile
-import io
-from datetime import datetime
-import re
 
-# ONLY THIS at top level - no session state, no other calls
-st.set_page_config(page_title="MeetSearch Pro", layout="wide")
-
-# Import doc processing
-try:
-    from docx import Document
-    import PyPDF2
-except ImportError:
-    st.error("Missing dependencies")
-
-# Use a GLOBAL variable instead of session state
-app_data = {
-    'documents': [],
-    'metadata': []
-}
-
-def extract_text(file):
-    """Extract text from file"""
-    try:
-        if file.name.lower().endswith('.pdf'):
-            reader = PyPDF2.PdfReader(file)
-            return " ".join([page.extract_text() or "" for page in reader.pages])
-        elif file.name.lower().endswith('.docx'):
-            doc = Document(file)
-            return " ".join([p.text for p in doc.paragraphs if p.text])
-    except:
-        return ""
-    return ""
+# ONLY this at top level - no other Streamlit calls, no session state
+st.set_page_config(
+    page_title="MeetSearch Pro",
+    page_icon="🔍",
+    layout="wide"
+)
 
 def main():
-    """Main app - no session state usage"""
+    """All app code lives here"""
+    # Initialize session state safely
+    if 'docs' not in st.session_state:
+        st.session_state.docs = []
+        st.session_state.meta = []
+    
+    # App UI
     st.title("🔍 MeetSearch Pro")
     st.write("Upload and search meeting minutes")
     
-    # Upload section
-    st.header("📤 Upload Documents")
+    # File upload
     uploaded_files = st.file_uploader(
-        "Choose PDF or DOCX files", 
-        type=['pdf', 'docx'], 
+        "Choose PDF or DOCX files",
+        type=['pdf', 'docx'],
         accept_multiple_files=True
     )
     
     if uploaded_files and st.button("Process Files"):
-        # Process files and update global data
-        new_docs = []
-        new_meta = []
-        
-        for file in uploaded_files:
-            text = extract_text(file)
-            if text and len(text) > 10:
-                words = len(text.split())
-                new_docs.append(text)
-                new_meta.append({
-                    'name': file.name,
-                    'words': words,
-                    'text': text
-                })
-        
-        if new_docs:
-            app_data['documents'] = new_docs
-            app_data['metadata'] = new_meta
-            st.success(f"✅ Processed {len(new_docs)} documents!")
+        process_files(uploaded_files)
     
-    # Search section
-    st.header("🔍 Search Documents")
-    
-    if app_data['documents']:
-        query = st.text_input("Search for:")
-        if query:
-            results = []
-            for i, (doc, meta) in enumerate(zip(app_data['documents'], app_data['metadata'])):
-                if query.lower() in doc.lower():
-                    # Simple highlight
-                    highlighted = doc.replace(query, f"**{query}**")
-                    results.append((meta['name'], highlighted, meta))
-            
-            if results:
-                st.success(f"Found {len(results)} matches:")
-                for name, highlighted, meta in results:
-                    with st.expander(f"📄 {name} - {meta['words']} words"):
-                        st.write(highlighted)
-            else:
-                st.info("No matches found")
+    # Search functionality
+    if st.session_state.docs:
+        search_interface()
     else:
         st.info("Upload documents to enable search")
     
-    # Analytics section
-    st.header("📊 Analytics")
-    
-    if app_data['metadata']:
-        meta = app_data['metadata']
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.metric("Documents", len(meta))
-        with col2:
-            total_words = sum(m['words'] for m in meta)
-            st.metric("Total Words", total_words)
-        with col3:
-            avg_words = total_words // len(meta) if meta else 0
-            st.metric("Avg per Doc", avg_words)
-        
-        # Show document list
-        for m in meta:
-            with st.expander(f"{m['name']} ({m['words']} words)"):
-                st.write(m['text'][:500] + "..." if len(m['text']) > 500 else m['text'])
-    else:
-        st.info("Upload documents to see analytics")
+    # Analytics
+    if st.session_state.meta:
+        show_analytics()
 
-# Run the app
+def process_files(uploaded_files):
+    """Process uploaded files"""
+    from docx import Document
+    import PyPDF2
+    import re
+    
+    new_docs = []
+    new_meta = []
+    
+    for file in uploaded_files:
+        text = ""
+        try:
+            if file.name.lower().endswith('.pdf'):
+                reader = PyPDF2.PdfReader(file)
+                text = " ".join([page.extract_text() or "" for page in reader.pages])
+            elif file.name.lower().endswith('.docx'):
+                doc = Document(file)
+                text = " ".join([p.text for p in doc.paragraphs if p.text])
+        except Exception as e:
+            st.error(f"Error with {file.name}: {str(e)}")
+            continue
+        
+        if text and len(text.strip()) > 10:
+            words = len(text.split())
+            new_docs.append(text)
+            new_meta.append({
+                'name': file.name,
+                'words': words,
+                'text': text
+            })
+    
+    if new_docs:
+        st.session_state.docs = new_docs
+        st.session_state.meta = new_meta
+        st.success(f"Processed {len(new_docs)} documents!")
+
+def search_interface():
+    """Search functionality"""
+    query = st.text_input("Search for:")
+    
+    if query:
+        results = []
+        for doc, meta in zip(st.session_state.docs, st.session_state.meta):
+            if query.lower() in doc.lower():
+                results.append((meta['name'], doc, meta))
+        
+        if results:
+            st.write(f"Found {len(results)} matches:")
+            for name, doc, meta in results:
+                with st.expander(f"{name} - {meta['words']} words"):
+                    st.write(doc[:1000] + "..." if len(doc) > 1000 else doc)
+        else:
+            st.info("No matches found")
+
+def show_analytics():
+    """Show analytics"""
+    meta = st.session_state.meta
+    st.write(f"**Documents:** {len(meta)}")
+    total_words = sum(m['words'] for m in meta)
+    st.write(f"**Total words:** {total_words}")
+    st.write(f"**Average per document:** {total_words // len(meta)}")
+
+# REQUIRED: This conditional ensures proper initialization
 if __name__ == "__main__":
     main()
