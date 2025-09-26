@@ -1,100 +1,76 @@
 import gradio as gr
-import os
-import zipfile
-from io import BytesIO
 from PyPDF2 import PdfReader
 from docx import Document
+import zipfile
+import io
 from sentence_transformers import SentenceTransformer, util
-import rapidfuzz
+import os
+import tempfile
 
-# Load AI model
+# Load AI model for semantic search
 model = SentenceTransformer('all-MiniLM-L6-v2')
 
-# --- File extraction functions ---
-def extract_text_from_pdf(file):
-    reader = PdfReader(file)
-    text = ""
-    for page in reader.pages:
-        text += page.extract_text() + "\n"
-    return text
+def extract_text(file_bytes, filename):
+    """Extract text from PDF or DOCX"""
+    if filename.endswith(".pdf"):
+        reader = PdfReader(io.BytesIO(file_bytes))
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text() + "\n"
+        return text
+    elif filename.endswith(".docx"):
+        doc = Document(io.BytesIO(file_bytes))
+        return "\n".join([p.text for p in doc.paragraphs])
+    else:
+        return ""
 
-def extract_text_from_docx(file):
-    doc = Document(file)
-    return "\n".join([para.text for para in doc.paragraphs])
-
-def extract_text_from_zip(file):
-    texts = {}
-    with zipfile.ZipFile(file, 'r') as z:
-        for filename in z.namelist():
-            if filename.endswith('.pdf'):
-                with z.open(filename) as f:
-                    texts[filename] = extract_text_from_pdf(f)
-            elif filename.endswith('.docx'):
-                with z.open(filename) as f:
-                    texts[filename] = extract_text_from_docx(f)
-    return texts
-
-def load_files(files):
-    all_texts = {}
-    for file in files:
-        name = os.path.basename(file.name)
-        if name.endswith('.pdf'):
-            all_texts[name] = extract_text_from_pdf(file.name)
-        elif name.endswith('.docx'):
-            all_texts[name] = extract_text_from_docx(file.name)
-        elif name.endswith('.zip'):
-            all_texts.update(extract_text_from_zip(file.name))
-    return all_texts
-
-# --- Search function ---
-def search_documents(files, query):
-    all_texts = load_files(files)
-    query_embedding = model.encode(query, convert_to_tensor=True)
+def search_documents(zip_file, query):
+    """Search for query across all documents in uploaded ZIP"""
     results = []
+    temp_dir = tempfile.mkdtemp()
+    with zipfile.ZipFile(zip_file.name, "r") as zip_ref:
+        zip_ref.extractall(temp_dir)
 
-    for fname, text in all_texts.items():
-        sentences = [s.strip() for s in text.split('\n') if s.strip()]
-        if not sentences:
-            continue
-        sentence_embeddings = model.encode(sentences, convert_to_tensor=True)
-        cosine_scores = util.cos_sim(query_embedding, sentence_embeddings)[0]
+    query_embedding = model.encode(query, convert_to_tensor=True)
 
-        # Top 5 matches
-        top_results = sorted(
-            [(sentences[i], float(cosine_scores[i])) for i in range(len(sentences))],
-            key=lambda x: x[1], reverse=True
-        )[:5]
+    for root, _, files in os.walk(temp_dir):
+        for file in files:
+            if file.endswith((".pdf", ".docx")):
+                path = os.path.join(root, file)
+                with open(path, "rb") as f:
+                    text = extract_text(f.read(), file)
+                    if not text.strip():
+                        continue
+                    # Semantic search
+                    sentences = [s.strip() for s in text.split("\n") if s.strip()]
+                    embeddings = model.encode(sentences, convert_to_tensor=True)
+                    scores = util.cos_sim(query_embedding, embeddings)[0]
+                    top_results = [(sentences[i], float(scores[i])) for i in range(len(sentences)) if scores[i] > 0.5]
+                    if top_results:
+                        results.append({
+                            "file": file,
+                            "matches": sorted(top_results, key=lambda x: x[1], reverse=True)
+                        })
 
-        for sent, score in top_results:
-            ratio = rapidfuzz.fuzz.partial_ratio(query.lower(), sent.lower())
-            # Highlight exact matches
-            highlighted = sent.replace(query, f"**{query}**")
-            results.append({
-                "Document": fname,
-                "Sentence": highlighted,
-                "Score": round(score, 3),
-                "Similarity": ratio
-            })
-
-    # Convert to card-style list for Gradio
-    cards = []
+    # Create card-style output
+    output_components = []
     for r in results:
-        cards.append(gr.Markdown(f"**Document:** {r['Document']}\n\n**Score:** {r['Score']}, **Similarity:** {r['Similarity']}\n\n{r['Sentence']}"))
+        matches_text = "\n\n".join([f"**{match[0]}** (score: {match[1]:.2f})" for match in r["matches"][:5]])
+        card = gr.Card(r["file"], matches_text)
+        output_components.append(card)
 
-    return cards if cards else ["No matches found."]
+    if not output_components:
+        return "No matches found."
+    return output_components
 
-# --- Gradio UI ---
 with gr.Blocks() as demo:
-    gr.Markdown("# AI-Powered Document Search")
-    gr.Markdown("Upload PDFs, Word docs, or ZIPs. Search for words or similar sentences. Results are shown as cards with highlights.")
-
+    gr.Markdown("## AI-Powered Meeting Minutes Search")
     with gr.Row():
-        file_input = gr.File(label="Upload Documents", file_types=[".pdf", ".docx", ".zip"], type="file", file_types_count="multiple")
-        query_input = gr.Textbox(label="Search Query", placeholder="Enter word or phrase")
-
+        zip_input = gr.File(label="Upload ZIP of PDFs/DOCs", file_types=[".zip"])
+        query_input = gr.Textbox(label="Search Query", placeholder="Enter word, phrase, or concept")
     search_btn = gr.Button("Search")
-    output = gr.Column()
-
-    search_btn.click(fn=search_documents, inputs=[file_input, query_input], outputs=[output])
+    output_area = gr.Column()
+    
+    search_btn.click(search_documents, inputs=[zip_input, query_input], outputs=[output_area])
 
 demo.launch()
