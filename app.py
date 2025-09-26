@@ -1,159 +1,100 @@
-import os
-import tempfile
-import zipfile
-from pathlib import Path
-
-import PyPDF2
-import docx
 import gradio as gr
+import os
+import zipfile
+from io import BytesIO
+from PyPDF2 import PdfReader
+from docx import Document
 from sentence_transformers import SentenceTransformer, util
+import rapidfuzz
 
-# -----------------------------
-# AI Model
-# -----------------------------
-MODEL = SentenceTransformer("all-MiniLM-L6-v2")
+# Load AI model
+model = SentenceTransformer('all-MiniLM-L6-v2')
 
-# -----------------------------
-# Global Store
-# -----------------------------
-CHUNKS = []  # list of dicts: {doc, text, embedding}
+# --- File extraction functions ---
+def extract_text_from_pdf(file):
+    reader = PdfReader(file)
+    text = ""
+    for page in reader.pages:
+        text += page.extract_text() + "\n"
+    return text
 
-# -----------------------------
-# File Parsing
-# -----------------------------
-def extract_text_from_pdf(path):
-    text = []
-    try:
-        with open(path, "rb") as f:
-            reader = PyPDF2.PdfReader(f)
-            for page in reader.pages:
-                txt = page.extract_text() or ""
-                text.append(txt)
-    except Exception as e:
-        text.append(f"[PDF parse error: {e}]")
-    return "\n".join(text)
+def extract_text_from_docx(file):
+    doc = Document(file)
+    return "\n".join([para.text for para in doc.paragraphs])
 
-def extract_text_from_docx(path):
-    try:
-        doc = docx.Document(path)
-        return "\n".join([p.text for p in doc.paragraphs])
-    except Exception as e:
-        return f"[DOCX parse error: {e}]"
+def extract_text_from_zip(file):
+    texts = {}
+    with zipfile.ZipFile(file, 'r') as z:
+        for filename in z.namelist():
+            if filename.endswith('.pdf'):
+                with z.open(filename) as f:
+                    texts[filename] = extract_text_from_pdf(f)
+            elif filename.endswith('.docx'):
+                with z.open(filename) as f:
+                    texts[filename] = extract_text_from_docx(f)
+    return texts
 
-def process_zip(path, tmpdir):
-    paths = []
-    try:
-        with zipfile.ZipFile(path, "r") as z:
-            z.extractall(tmpdir)
-            for root, _, files in os.walk(tmpdir):
-                for fname in files:
-                    paths.append(os.path.join(root, fname))
-    except Exception as e:
-        print("Zip error:", e)
-    return paths
+def load_files(files):
+    all_texts = {}
+    for file in files:
+        name = os.path.basename(file.name)
+        if name.endswith('.pdf'):
+            all_texts[name] = extract_text_from_pdf(file.name)
+        elif name.endswith('.docx'):
+            all_texts[name] = extract_text_from_docx(file.name)
+        elif name.endswith('.zip'):
+            all_texts.update(extract_text_from_zip(file.name))
+    return all_texts
 
-# -----------------------------
-# Chunking & Embedding
-# -----------------------------
-def _chunk_and_embed(text, docname, chunk_size=400):
-    global CHUNKS
-    lines = text.split("\n")
-    buf = []
-    for line in lines:
-        if not line.strip():
+# --- Search function ---
+def search_documents(files, query):
+    all_texts = load_files(files)
+    query_embedding = model.encode(query, convert_to_tensor=True)
+    results = []
+
+    for fname, text in all_texts.items():
+        sentences = [s.strip() for s in text.split('\n') if s.strip()]
+        if not sentences:
             continue
-        buf.append(line.strip())
-        if sum(len(x) for x in buf) > chunk_size:
-            chunk = " ".join(buf)
-            emb = MODEL.encode(chunk, convert_to_tensor=True)
-            CHUNKS.append({"doc": docname, "text": chunk, "embedding": emb})
-            buf = []
-    if buf:
-        chunk = " ".join(buf)
-        emb = MODEL.encode(chunk, convert_to_tensor=True)
-        CHUNKS.append({"doc": docname, "text": chunk, "embedding": emb})
+        sentence_embeddings = model.encode(sentences, convert_to_tensor=True)
+        cosine_scores = util.cos_sim(query_embedding, sentence_embeddings)[0]
 
-# -----------------------------
-# Upload & Process
-# -----------------------------
-def upload_files(files):
-    global CHUNKS
-    CHUNKS.clear()
-    tmpdir = tempfile.mkdtemp(prefix="uploads_")
-    file_list = files if isinstance(files, list) else [files]
+        # Top 5 matches
+        top_results = sorted(
+            [(sentences[i], float(cosine_scores[i])) for i in range(len(sentences))],
+            key=lambda x: x[1], reverse=True
+        )[:5]
 
-    total_chunks = 0
+        for sent, score in top_results:
+            ratio = rapidfuzz.fuzz.partial_ratio(query.lower(), sent.lower())
+            # Highlight exact matches
+            highlighted = sent.replace(query, f"**{query}**")
+            results.append({
+                "Document": fname,
+                "Sentence": highlighted,
+                "Score": round(score, 3),
+                "Similarity": ratio
+            })
 
-    for f in file_list:
-        if not f:
-            continue
-        path = getattr(f, "name", None) or (f.get("name") if isinstance(f, dict) else None)
-        if not path:
-            continue
-
-        if path.lower().endswith(".pdf"):
-            text = extract_text_from_pdf(path)
-            _chunk_and_embed(text, Path(path).name)
-        elif path.lower().endswith(".docx"):
-            text = extract_text_from_docx(path)
-            _chunk_and_embed(text, Path(path).name)
-        elif path.lower().endswith(".zip"):
-            extracted = process_zip(path, tmpdir)
-            for ep in extracted:
-                if ep.lower().endswith(".pdf"):
-                    text = extract_text_from_pdf(ep)
-                    _chunk_and_embed(text, Path(ep).name)
-                elif ep.lower().endswith(".docx"):
-                    text = extract_text_from_docx(ep)
-                    _chunk_and_embed(text, Path(ep).name)
-        total_chunks = len(CHUNKS)
-
-    return f"✅ Uploaded and embedded {total_chunks} text chunks."
-
-# -----------------------------
-# AI Semantic Search
-# -----------------------------
-def search_docs(query, top_k=5):
-    global CHUNKS
-    if not CHUNKS:
-        return [gr.Textbox.update(value="⚠️ No documents uploaded yet.")]
-
-    query_emb = MODEL.encode(query, convert_to_tensor=True)
-    scores = [(util.cos_sim(query_emb, c["embedding"]).item(), c) for c in CHUNKS]
-    scores = sorted(scores, key=lambda x: x[0], reverse=True)[:top_k]
-
+    # Convert to card-style list for Gradio
     cards = []
-    for score, chunk in scores:
-        snippet = chunk["text"]
-        cards.append(gr.Markdown(f"**📄 {chunk['doc']}** (score: {score:.2f})\n\n{snippet[:300]}{'...' if len(snippet)>300 else ''}"))
+    for r in results:
+        cards.append(gr.Markdown(f"**Document:** {r['Document']}\n\n**Score:** {r['Score']}, **Similarity:** {r['Similarity']}\n\n{r['Sentence']}"))
 
-    return cards
+    return cards if cards else ["No matches found."]
 
-# -----------------------------
-# Gradio UI
-# -----------------------------
-with gr.Blocks(css=".gr-textbox {font-family: Arial; font-size: 14px;}") as demo:
-    gr.Markdown("## 🤖 AI-Powered Meeting Minutes Search\nUpload PDFs, Word docs, or ZIP files, then search semantically for topics.")
+# --- Gradio UI ---
+with gr.Blocks() as demo:
+    gr.Markdown("# AI-Powered Document Search")
+    gr.Markdown("Upload PDFs, Word docs, or ZIPs. Search for words or similar sentences. Results are shown as cards with highlights.")
 
     with gr.Row():
-        upload_box = gr.File(
-            label="Upload Documents (PDF, DOCX, ZIP)",
-            file_types=[".pdf", ".docx", ".zip"],
-            type="file",
-            file_types_count="multiple"
-        )
-        upload_btn = gr.Button("Process Uploads", variant="primary")
+        file_input = gr.File(label="Upload Documents", file_types=[".pdf", ".docx", ".zip"], type="file", file_types_count="multiple")
+        query_input = gr.Textbox(label="Search Query", placeholder="Enter word or phrase")
 
-    status = gr.Textbox(label="Status", interactive=False)
+    search_btn = gr.Button("Search")
+    output = gr.Column()
 
-    with gr.Row():
-        query = gr.Textbox(label="Search term", placeholder="e.g. animal")
-        search_btn = gr.Button("Search", variant="primary")
+    search_btn.click(fn=search_documents, inputs=[file_input, query_input], outputs=[output])
 
-    results = gr.Column()
-
-    upload_btn.click(upload_files, inputs=upload_box, outputs=status)
-    search_btn.click(search_docs, inputs=query, outputs=results)
-
-if __name__ == "__main__":
-    demo.launch()
+demo.launch()
