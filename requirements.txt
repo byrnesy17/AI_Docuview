@@ -1,3 +1,4 @@
-gradio==4.44.0
+gradio==4.38.1
 PyPDF2==3.0.1
-python-docx==1.1.2
+python-docx==0.8.11
+websockets>=10.0,<13.0
